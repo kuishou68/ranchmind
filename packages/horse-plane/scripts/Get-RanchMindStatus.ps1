@@ -53,8 +53,8 @@ function Get-TaskQuery {
 
 $ranchMindRoot = Get-RanchMindRoot
 $config = Load-RanchMindConfig -RootPath $ranchMindRoot -CustomConfigPath $ConfigPath
-$latestReceiptPath = Join-Path $ranchMindRoot "state\memory\training-latest.json"
-$latestMarkdownPath = Join-Path $ranchMindRoot "state\memory\training-latest.md"
+$latestReceiptPath = Join-Path (Join-Path $ranchMindRoot "state") (Join-Path "memory" "training-latest.json")
+$latestMarkdownPath = Join-Path (Join-Path $ranchMindRoot "state") (Join-Path "memory" "training-latest.md")
 $hermesLogPath = Resolve-ConfigValuePath -Value $config.hermes.gatewayLog -BasePath $ranchMindRoot
 
 $latestReceiptSummary = $null
@@ -87,13 +87,31 @@ if (Test-Path -LiteralPath $hermesLogPath) {
     $hermesLogTail = Get-Content -LiteralPath $hermesLogPath -Tail 5
 }
 
+$schedulerSummary = if ($IsWindows) {
+    [ordered]@{
+        ranchmind_task = Get-TaskQuery -TaskPath ([string]$config.ranchmind.taskPath) -TaskName ([string]$config.ranchmind.taskName)
+        legacy_kd_task = Get-TaskQuery -TaskPath ([string]$config.kd.legacyTaskPath) -TaskName ([string]$config.kd.legacyTaskName)
+    }
+}
+else {
+    [ordered]@{
+        ranchmind_task = [ordered]@{
+            exists = $false
+            output = "Windows Scheduled Task inspection is not available on this platform."
+        }
+        legacy_kd_task = [ordered]@{
+            exists = $false
+            output = "Windows Scheduled Task inspection is not available on this platform."
+        }
+    }
+}
+
 [ordered]@{
     ranchmind_root = $ranchMindRoot
     latest_receipt_path = $latestReceiptPath
     latest_markdown_path = $latestMarkdownPath
     latest_receipt = $latestReceiptSummary
-    ranchmind_task = Get-TaskQuery -TaskPath ([string]$config.ranchmind.taskPath) -TaskName ([string]$config.ranchmind.taskName)
-    legacy_kd_task = Get-TaskQuery -TaskPath ([string]$config.kd.legacyTaskPath) -TaskName ([string]$config.kd.legacyTaskName)
+    scheduler = $schedulerSummary
     hermes = [ordered]@{
         task_name = [string]$config.hermes.taskName
         gateway_log = $hermesLogPath

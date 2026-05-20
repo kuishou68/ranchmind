@@ -72,6 +72,51 @@ Does not own:
 5. **Next action**
    - future dispatch can consult memory, policy, and operator context
 
+## Cross-platform runtime layer
+
+The current repo now treats the control layer as **portable**, with platform adapters below it.
+
+### Control layer
+
+- `scripts/ranchmind.mjs`
+- config loading and token expansion
+- receipt writing
+- memory ledger updates
+- platform detection
+
+### Platform adapters
+
+#### Windows
+
+- training via the existing KD PowerShell script
+- scheduling via Windows Scheduled Task
+- status via `schtasks.exe` and local receipt inspection
+
+#### macOS / Linux
+
+- training via a configurable command that emits JSON
+- scheduling via a user cron entry
+- status via cron inspection plus local receipt inspection
+
+This keeps the validated Windows lane intact while allowing the same RanchMind control plane to orchestrate non-Windows environments without hard-coding `powershell.exe` or Task Scheduler into the primary CLI.
+
+## Adapter contract
+
+Every execution adapter must return a JSON payload that RanchMind can record as a receipt. The control plane owns:
+
+- request date
+- invocation source
+- receipt file path
+- memory summaries
+
+The adapter owns:
+
+- how execution is launched
+- platform-specific dependencies
+- the payload fields inside `outcome`
+
+This separation is what lets the same Human and Horse loops operate above different runtimes.
+
 ## Suggested package map
 
 - `apps/human-plane`

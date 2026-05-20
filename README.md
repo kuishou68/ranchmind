@@ -135,17 +135,55 @@ ranchmind/
 
 This repo now includes a working local MVP for the **non-trading-day factor training** lane.
 
-- **Lobster** runs the existing KD factor-training script
-- **Horse** registers a RanchMind-branded Windows Scheduled Task
-- **Human** writes durable receipts and memory summaries into `state\memory\`
+- **Lobster** runs a platform adapter command that must emit JSON
+- **Horse** uses a platform scheduler adapter
+- **Human** writes durable receipts and memory summaries into `state/memory/`
+
+On this Windows machine, the default adapters are already wired to the validated KD workflow and Windows Scheduled Task path.
 
 ### Commands
 
-```powershell
-node .\scripts\ranchmind.mjs status
-node .\scripts\ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
-node .\scripts\ranchmind.mjs register-training --disable-legacy
+```bash
+node ./scripts/ranchmind.mjs status
+node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
+node ./scripts/ranchmind.mjs register-training --disable-legacy
 ```
+
+### Cross-platform adapter model
+
+RanchMind now uses a **Node control layer** with platform adapters:
+
+| Platform | Training adapter | Scheduler adapter | Current default |
+| --- | --- | --- | --- |
+| Windows | PowerShell KD training script | Windows Scheduled Task | Fully wired and validated on this machine |
+| macOS | Configurable command returning JSON | cron | Adapter path implemented, command must be configured |
+| Linux | Configurable command returning JSON | cron | Adapter path implemented, command must be configured |
+
+The platform-specific adapter config lives in `ranchmind.config.json`.
+
+### Training adapter contract
+
+The configured command must emit a single JSON payload with the same shape that the current KD script returns, for example:
+
+```json
+{
+  "status": "ok",
+  "target_end_date": "2026-05-15",
+  "summary": {
+    "best_config": "broad_recovery",
+    "best_qimen_mode": "qimen_m1_positive",
+    "objective_score": 1.23
+  }
+}
+```
+
+RanchMind records that payload into its own receipt and memory ledger regardless of platform.
+
+### Scheduler notes
+
+- **Windows** keeps the validated Scheduled Task flow, including the legacy KD task disable path.
+- **macOS/Linux** currently register a user-level **cron** entry.
+- cron does **not** replay a missed run after sleep or shutdown; if you need catch-up semantics, swap the scheduler adapter for `launchd`, `systemd`, or `anacron`.
 
 ### Durable state
 
@@ -161,7 +199,7 @@ state/
     training/
 ```
 
-The underlying KD workflow remains the authoritative execution source. RanchMind does not replace it; RanchMind wraps it, records it, and schedules it under its own control plane.
+The underlying KD workflow remains the authoritative execution source on Windows. RanchMind does not replace it; RanchMind wraps it, records it, and schedules it under its own control plane.
 
 ## Initial roadmap
 

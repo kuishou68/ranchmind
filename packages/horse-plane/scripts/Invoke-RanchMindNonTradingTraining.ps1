@@ -55,6 +55,18 @@ function Ensure-Directory {
     }
 }
 
+function Get-PowerShellExecutable {
+    $candidates = @("powershell.exe", "pwsh", "powershell")
+    foreach ($candidate in $candidates) {
+        $command = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+
+    throw "No PowerShell executable found on PATH."
+}
+
 function Load-RanchMindConfig {
     param(
         [string]$RootPath,
@@ -93,7 +105,8 @@ function Invoke-KdTraining {
         $args += "-Force"
     }
 
-    $raw = & powershell.exe @args 2>&1 | Out-String
+    $shell = Get-PowerShellExecutable
+    $raw = & $shell @args 2>&1 | Out-String
     $exitCode = $LASTEXITCODE
     $trimmed = $raw.Trim()
     if (-not $trimmed) {
@@ -197,7 +210,7 @@ $config = Load-RanchMindConfig -RootPath $ranchMindRoot -CustomConfigPath $Confi
 $kdRepoRoot = Resolve-ConfigValuePath -Value $config.kd.repoRoot -BasePath $ranchMindRoot
 $kdTrainingScript = Resolve-ConfigValuePath -Value $config.kd.trainingScript -BasePath $ranchMindRoot
 $stateRoot = Join-Path $ranchMindRoot "state"
-$receiptsRoot = Join-Path $stateRoot "receipts\training"
+$receiptsRoot = Join-Path (Join-Path $stateRoot "receipts") "training"
 $memoryRoot = Join-Path $stateRoot "memory"
 $latestReceiptPath = Join-Path $memoryRoot "training-latest.json"
 $latestMarkdownPath = Join-Path $memoryRoot "training-latest.md"
