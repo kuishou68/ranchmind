@@ -1,0 +1,18 @@
+{
+  "kd": {
+    "repoRoot": "..\\cocoon-trade\\cocoon-trade",
+    "trainingScript": "..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-OvernightHoldNonTradingFactorTraining.ps1",
+    "legacyTaskPath": "\\KD\\",
+    "legacyTaskName": "KdNonTradingFactorTrainingDaily"
+  },
+  "hermes": {
+    "home": "%USERPROFILE%\\.hermes-windows\\runtime",
+    "taskName": "Hermes Gateway",
+    "gatewayLog": "%USERPROFILE%\\.hermes-windows\\runtime\\logs\\gateway.log"
+  },
+  "ranchmind": {
+    "taskPath": "\\RanchMind\\",
+    "taskName": "RanchMindNonTradingFactorTrainingDaily",
+    "taskTime": "10:20"
+  }
+}

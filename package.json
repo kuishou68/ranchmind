@@ -1,0 +1,15 @@
+{
+  "name": "ranchmind",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Closed-loop agent runtime concept: lobster execution, horse dispatch, human memory.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node .\\scripts\\ranchmind.mjs help",
+    "build": "echo RanchMind MVP uses PowerShell wrappers and existing local training backends",
+    "lint": "echo No lint configured yet",
+    "status": "node .\\scripts\\ranchmind.mjs status",
+    "run:training": "node .\\scripts\\ranchmind.mjs run-training",
+    "register:training": "node .\\scripts\\ranchmind.mjs register-training --disable-legacy"
+  }
+}

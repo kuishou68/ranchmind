@@ -1,0 +1,35 @@
+Create a short animated promo scene for an open-source product called RanchMind.
+
+Visual concept:
+- three distinct roles, not a merged creature
+- a red lobster as the execution specialist
+- a white horse as the scheduler and dispatcher
+- a calm humanoid operator as the memory and control plane
+
+Scene:
+- retro-futurist operations barn at night
+- the lobster works across multiple terminal screens with code, shell output, and task receipts
+- the horse stands at a dispatch wall with clocks, message routes, and task queues
+- the human stands in front of a glowing memory graph and dashboard
+- threads of light connect all three stations into a single loop
+
+Tone:
+- open-source
+- capable
+- slightly playful
+- cinematic but not childish
+
+Do not create a monster hybrid.
+Keep the three roles separate and readable.
+
+On-screen text:
+- RanchMind
+- Lobster + Horse + Human
+- Execute. Dispatch. Remember.
+
+Style:
+- clean motion-graphics look
+- subtle neon accents
+- smooth camera movement
+- 8 to 12 seconds
+- suitable as a GitHub launch promo
