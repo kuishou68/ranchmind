@@ -101,6 +101,12 @@ node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.m
 
 # Register the task in Windows Task Scheduler
 node ./scripts/ranchmind.mjs register-training --disable-legacy
+
+# Inspect and repair the Feishu-facing runtime
+node ./scripts/ranchmind.mjs ensure-feishu-runtime
+
+# Register the Feishu watchdog
+node ./scripts/ranchmind.mjs register-feishu-watchdog
 ```
 
 ### Harness runtime
@@ -156,6 +162,35 @@ This is the core change inspired by Anthropic's harness design: RanchMind no lon
 - **Accepted no-op outcomes** like trading-day skips are treated as successful runs, not failures.
 - **Quality/policy failures** become `blocked` and require operator review; RanchMind does not auto-loop forever on weak metrics.
 - **Scheduled Windows runs** now execute the Node harness entrypoint directly rather than bypassing it with a raw PowerShell wrapper.
+
+## 🛰️ Feishu runtime watchdog
+
+RanchMind now adds a Feishu watchdog inspired by the durable launcher patterns already proven in Hermes/OpenClaw:
+
+- snapshots source Codex auth and Hermes runtime auth
+- compares token fingerprints without storing raw tokens
+- reads Hermes gateway state and recent gateway log failures
+- distinguishes **gateway down** from **gateway alive but stuck**
+- syncs runtime auth only when the source token is healthy
+- **blocks** instead of blind-restarting when the source token is the same one the server already rejected
+- restarts the gateway by killing the stuck gateway PID so the existing Hermes launcher can re-run its own sync-and-start loop
+
+### Feishu watchdog state
+
+```text
+state/
+  memory/
+    feishu-runtime-latest.json
+    feishu-runtime-latest.md
+    feishu-runtime-history.jsonl
+```
+
+This means RanchMind can now tell the difference between:
+
+- **healthy**: gateway running and not accumulating auth failures
+- **recovering**: RanchMind synced auth and triggered a launcher-driven restart
+- **degraded**: RanchMind found a runtime problem but could not repair it automatically
+- **blocked**: the local source token itself needs re-authentication, so restarting Hermes would just loop
 
 ---
 

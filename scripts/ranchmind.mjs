@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -233,6 +234,75 @@ function getHermesConfig(config) {
   return null;
 }
 
+function getFeishuWatchdogConfig(config) {
+  const watchdog = config.feishuWatchdog ?? {};
+  return {
+    failureThreshold: watchdog.failureThreshold ?? 3,
+    taskPath: watchdog.taskPath ?? "\\RanchMind\\",
+    taskName: watchdog.taskName ?? "RanchMindFeishuWatchdog",
+    taskTime: watchdog.taskTime ?? "00:00",
+    repeatMinutes: watchdog.repeatMinutes ?? 5,
+    sourceCodexAuthPath: watchdog.sourceCodexAuthPath ?? "%USERPROFILE%\\.codex\\auth.json",
+    runtimeHermesAuthPath: watchdog.runtimeHermesAuthPath ?? "%USERPROFILE%\\.hermes-windows\\runtime\\auth.json",
+    gatewayStatePath: watchdog.gatewayStatePath ?? "%USERPROFILE%\\.hermes-windows\\runtime\\gateway_state.json",
+    gatewayPidPath: watchdog.gatewayPidPath ?? "%USERPROFILE%\\.hermes-windows\\runtime\\gateway.pid",
+    syncScriptPath: watchdog.syncScriptPath ?? "%USERPROFILE%\\.hermes-windows\\Sync-CodexAuthToHermes.ps1",
+    gatewayTaskName: watchdog.gatewayTaskName ?? "Hermes Gateway",
+    gatewayTaskPath: watchdog.gatewayTaskPath ?? "\\",
+    syncSkewSeconds: watchdog.syncSkewSeconds ?? 3600,
+    logTailLines: watchdog.logTailLines ?? 200
+  };
+}
+
+function safeReadJson(filePath, fallback = null) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return fallback;
+    }
+    return readJson(filePath);
+  }
+  catch {
+    return fallback;
+  }
+}
+
+function compactText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function fingerprintToken(token) {
+  if (!token) {
+    return "";
+  }
+
+  const digest = crypto.createHash("sha256").update(String(token)).digest("hex");
+  return digest.slice(0, 12);
+}
+
+function decodeJwtExpiry(accessToken) {
+  if (!accessToken) {
+    return null;
+  }
+
+  const parts = String(accessToken).split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = Buffer.from(payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), "="), "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    if (!parsed.exp) {
+      return null;
+    }
+    return new Date(parsed.exp * 1000).toISOString();
+  }
+  catch {
+    return null;
+  }
+}
+
 function buildMarkdownSummary(receipt) {
   const lines = [
     "# RanchMind Training Summary",
@@ -410,6 +480,263 @@ function buildWindowsTaskXml(taskPath, taskName, taskTime) {
 `;
 }
 
+function buildWindowsRepeatedTaskXml(taskPath, taskName, taskTime, repeatMinutes, description, command, argumentsText, workingDirectory) {
+  const { hour, minute } = parseTimeText(taskTime);
+  const paddedHour = String(hour).padStart(2, "0");
+  const paddedMinute = String(minute).padStart(2, "0");
+  const now = new Date();
+  const startBoundary = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${paddedHour}:${paddedMinute}:00`;
+  const userId = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : process.env.USERNAME;
+  const taskUri = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
+
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>${escapeXml(description)}</Description>
+    <URI>${escapeXml(taskUri)}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>${startBoundary}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+      <Repetition>
+        <Interval>PT${repeatMinutes}M</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${escapeXml(userId)}</UserId>
+      <LogonType>S4U</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${escapeXml(command)}</Command>
+      <Arguments>${escapeXml(argumentsText)}</Arguments>
+      <WorkingDirectory>${escapeXml(workingDirectory)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+function tailFileLines(filePath, maxLines) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return [];
+  }
+
+  const lines = fs.readFileSync(filePath, "utf8").replace(/\r/g, "").split("\n").filter(Boolean);
+  return lines.slice(-maxLines);
+}
+
+function analyzeGatewayLog(lines, failureThreshold) {
+  const failurePatterns = [
+    /token_invalidated/i,
+    /no Codex OAuth token found/i,
+    /no available entries/i
+  ];
+  const successPatterns = [
+    /Lark websocket connected/i,
+    /Gateway running with/i,
+    /websocket connected/i
+  ];
+
+  let lastSuccessIndex = -1;
+  let consecutiveFailureCount = 0;
+  let hasTokenInvalidated = false;
+  let hasMissingCodexToken = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (successPatterns.some((pattern) => pattern.test(line))) {
+      lastSuccessIndex = index;
+    }
+  }
+
+  for (let index = Math.max(0, lastSuccessIndex + 1); index < lines.length; index += 1) {
+    const line = lines[index];
+    if (failurePatterns.some((pattern) => pattern.test(line))) {
+      consecutiveFailureCount += 1;
+    }
+    if (/token_invalidated/i.test(line)) {
+      hasTokenInvalidated = true;
+    }
+    if (/no Codex OAuth token found/i.test(line)) {
+      hasMissingCodexToken = true;
+    }
+  }
+
+  return {
+    lines,
+    last_success_index: lastSuccessIndex,
+    consecutive_failure_count: consecutiveFailureCount,
+    has_token_invalidated: hasTokenInvalidated,
+    has_missing_codex_token: hasMissingCodexToken,
+    stuck: consecutiveFailureCount >= failureThreshold
+  };
+}
+
+function getCredentialPoolEntry(runtimeAuth) {
+  return runtimeAuth?.credential_pool?.["openai-codex"]?.[0] ?? null;
+}
+
+function inspectGatewayProcess(pid) {
+  if (!pid || pid <= 0) {
+    return {
+      pid: 0,
+      running: false,
+      process_name: "",
+      path: "",
+      expected_name: false
+    };
+  }
+
+  const command = [
+    "$p = Get-Process -Id",
+    String(pid),
+    "-ErrorAction SilentlyContinue;",
+    "if ($p) { $p | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress }"
+  ].join(" ");
+  const result = runCommand("powershell.exe", ["-NoProfile", "-Command", command]);
+  const raw = `${result.stdout ?? ""}`.trim();
+
+  if (!raw) {
+    return {
+      pid,
+      running: false,
+      process_name: "",
+      path: "",
+      expected_name: false
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const processName = String(parsed.ProcessName ?? "");
+    return {
+      pid,
+      running: true,
+      process_name: processName,
+      path: String(parsed.Path ?? ""),
+      expected_name: /python|uv|hermes/i.test(processName)
+    };
+  }
+  catch {
+    return {
+      pid,
+      running: false,
+      process_name: "",
+      path: "",
+      expected_name: false
+    };
+  }
+}
+
+function stopProcessById(pid) {
+  const result = runCommand("powershell.exe", [
+    "-NoProfile",
+    "-Command",
+    `Stop-Process -Id ${pid} -Force`
+  ]);
+
+  return {
+    ok: !result.error && result.status === 0,
+    detail: compactText(`${result.stdout ?? ""} ${result.stderr ?? ""}`)
+  };
+}
+
+function invokeAuthSync(sourcePath, runtimePath, syncScriptPath, skewSeconds) {
+  const result = runCommand("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    syncScriptPath,
+    "-WindowsCodexAuthPath",
+    sourcePath,
+    "-HermesAuthPath",
+    runtimePath,
+    "-SkewSeconds",
+    String(skewSeconds)
+  ]);
+
+  const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  let summary = null;
+  try {
+    summary = raw ? JSON.parse(raw) : null;
+  }
+  catch {
+    summary = null;
+  }
+
+  return {
+    ok: !result.error && result.status === 0,
+    raw,
+    summary
+  };
+}
+
+function runTask(taskPath, taskName) {
+  const fullName = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
+  const result = runCommand("schtasks.exe", ["/Run", "/TN", fullName]);
+  return {
+    ok: !result.error && result.status === 0,
+    full_name: fullName,
+    detail: compactText(`${result.stdout ?? ""} ${result.stderr ?? ""}`)
+  };
+}
+
+function buildFeishuMarkdown(state) {
+  const lines = [
+    "# RanchMind Feishu Runtime",
+    "",
+    `- generated_at: ${state.generated_at}`,
+    `- lifecycle_status: ${state.lifecycle_status}`,
+    `- action: ${state.action}`,
+    `- reason: ${state.reason}`,
+    `- next_action: ${state.next_action}`
+  ];
+
+  if (state.gateway?.process) {
+    lines.push(`- gateway_running: ${state.gateway.process.running}`);
+    lines.push(`- gateway_pid: ${state.gateway.process.pid}`);
+  }
+  if (state.auth?.source?.fingerprint) {
+    lines.push(`- source_auth_fingerprint: ${state.auth.source.fingerprint}`);
+  }
+  if (state.auth?.runtime?.fingerprint) {
+    lines.push(`- runtime_auth_fingerprint: ${state.auth.runtime.fingerprint}`);
+  }
+  if (state.gateway?.log?.consecutive_failure_count !== undefined) {
+    lines.push(`- consecutive_gateway_failures: ${state.gateway.log.consecutive_failure_count}`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 function getCronQuery(taskName, logPath) {
   const { marker } = buildSchedulerLine(taskName, logPath);
 
@@ -555,6 +882,24 @@ function buildRunArtifacts(runId) {
     latestMarkdownPath: path.join(memoryRoot, "training-latest.md"),
     latestRunPath: path.join(memoryRoot, "training-latest-run.json"),
     historyPath: path.join(memoryRoot, "training-history.jsonl")
+  };
+}
+
+function buildFeishuArtifacts(runId) {
+  const stateRoot = path.join(rootDir, "state");
+  const runsRoot = path.join(stateRoot, "runs");
+  const runDir = path.join(runsRoot, runId);
+  const memoryRoot = path.join(stateRoot, "memory");
+
+  return {
+    stateRoot,
+    runsRoot,
+    runDir,
+    memoryRoot,
+    resultPath: path.join(runDir, "result.json"),
+    latestPath: path.join(memoryRoot, "feishu-runtime-latest.json"),
+    latestMarkdownPath: path.join(memoryRoot, "feishu-runtime-latest.md"),
+    historyPath: path.join(memoryRoot, "feishu-runtime-history.jsonl")
   };
 }
 
@@ -1024,6 +1369,209 @@ function runTrainingHarness() {
   return 1;
 }
 
+function ensureFeishuRuntime() {
+  if (platform !== "win32") {
+    throw new Error("Feishu watchdog is currently implemented for Windows only.");
+  }
+
+  const config = loadConfig();
+  const watchdogConfig = getFeishuWatchdogConfig(config);
+  const context = getContext();
+  const runId = `feishu-runtime-${nowIso().replace(/[-:]/g, "").replace(/\./g, "").replace("T", "-").replace("Z", "")}`;
+  const paths = buildFeishuArtifacts(runId);
+  ensureDirectory(paths.runDir);
+  ensureDirectory(paths.memoryRoot);
+  trimOldRunDirectories(paths.runsRoot, getHarnessConfig(config).runsRetainDays);
+
+  const sourceCodexAuthPath = resolvePathLike(watchdogConfig.sourceCodexAuthPath, context);
+  const runtimeHermesAuthPath = resolvePathLike(watchdogConfig.runtimeHermesAuthPath, context);
+  const gatewayStatePath = resolvePathLike(watchdogConfig.gatewayStatePath, context);
+  const gatewayPidPath = resolvePathLike(watchdogConfig.gatewayPidPath, context);
+  const syncScriptPath = resolvePathLike(watchdogConfig.syncScriptPath, context);
+  const gatewayLogPath = resolvePathLike(getHermesConfig(config)?.gatewayLog ?? "", context);
+
+  const sourceAuth = safeReadJson(sourceCodexAuthPath);
+  const runtimeAuthBefore = safeReadJson(runtimeHermesAuthPath);
+  const gatewayState = safeReadJson(gatewayStatePath);
+  const gatewayPidRecord = safeReadJson(gatewayPidPath);
+  const gatewayPid = Number.parseInt(String(gatewayState?.pid ?? gatewayPidRecord?.pid ?? "0"), 10) || 0;
+  const gatewayProcess = inspectGatewayProcess(gatewayPid);
+  const gatewayAvailable = gatewayProcess.running && gatewayProcess.expected_name;
+  const logLines = tailFileLines(gatewayLogPath, watchdogConfig.logTailLines);
+  const logAnalysis = analyzeGatewayLog(logLines, watchdogConfig.failureThreshold);
+  const runtimePoolBefore = getCredentialPoolEntry(runtimeAuthBefore);
+
+  const sourceAccessToken = sourceAuth?.tokens?.access_token ?? "";
+  const runtimeAccessToken = runtimePoolBefore?.access_token ?? "";
+  const sourceFingerprint = fingerprintToken(sourceAccessToken);
+  const runtimeFingerprint = fingerprintToken(runtimeAccessToken);
+  const sourceExpiry = decodeJwtExpiry(sourceAccessToken);
+  const sourceHealthy = Boolean(sourceAccessToken) && Boolean(sourceExpiry) && (new Date(sourceExpiry).getTime() - Date.now()) > (watchdogConfig.syncSkewSeconds * 1000);
+  const runtimeErrorReason = String(runtimePoolBefore?.last_error_reason ?? runtimePoolBefore?.last_status ?? "");
+  const authSameAsRejected = Boolean(sourceFingerprint) && sourceFingerprint === runtimeFingerprint && /token_invalidated|401/i.test(runtimeErrorReason);
+  const runtimeMissingToken = !runtimeAccessToken;
+  const runtimeMismatch = sourceFingerprint && runtimeFingerprint && sourceFingerprint !== runtimeFingerprint;
+  const runtimeNeedsSync = sourceHealthy && (runtimeMissingToken || runtimeMismatch || Boolean(runtimeErrorReason));
+
+  const state = {
+    run_id: runId,
+    generated_at: nowIso(),
+    lifecycle_status: "healthy",
+    action: "noop",
+    reason: "already_healthy",
+    next_action: "No intervention required.",
+    paths: {
+      source_codex_auth: sourceCodexAuthPath,
+      runtime_hermes_auth: runtimeHermesAuthPath,
+      gateway_state: gatewayStatePath,
+      gateway_pid: gatewayPidPath,
+      sync_script: syncScriptPath,
+      gateway_log: gatewayLogPath
+    },
+    auth: {
+      source: {
+        exists: Boolean(sourceAuth),
+        fingerprint: sourceFingerprint,
+        expiry_utc: sourceExpiry,
+        healthy: sourceHealthy
+      },
+      runtime: {
+        exists: Boolean(runtimeAuthBefore),
+        fingerprint: runtimeFingerprint,
+        last_error_reason: runtimeErrorReason
+      }
+    },
+    gateway: {
+      task: getTaskQuery(watchdogConfig.gatewayTaskPath, watchdogConfig.gatewayTaskName),
+      process: gatewayProcess,
+      available: gatewayAvailable,
+      log: {
+        consecutive_failure_count: logAnalysis.consecutive_failure_count,
+        stuck: logAnalysis.stuck,
+        has_token_invalidated: logAnalysis.has_token_invalidated,
+        has_missing_codex_token: logAnalysis.has_missing_codex_token,
+        tail: logLines.slice(-10)
+      }
+    }
+  };
+
+  if (!sourceAuth?.tokens?.access_token) {
+    state.lifecycle_status = "blocked";
+    state.action = "blocked";
+    state.reason = "source_auth_missing";
+    state.next_action = "Re-authenticate the source Codex CLI because RanchMind cannot recover a missing source token.";
+  }
+  else if (!sourceHealthy) {
+    state.lifecycle_status = "blocked";
+    state.action = "blocked";
+    state.reason = "source_auth_expired_or_expiring";
+    state.next_action = "Refresh the local Codex auth first; the watchdog will not restart Hermes with an expiring source token.";
+  }
+  else if (authSameAsRejected && logAnalysis.stuck) {
+    state.lifecycle_status = "blocked";
+    state.action = "blocked";
+    state.reason = "source_token_server_revoked";
+    state.next_action = "The source token fingerprint matches the token that Hermes already had rejected by the server. Re-authenticate the local CLI before any restart.";
+  }
+  else if (logAnalysis.stuck && runtimeNeedsSync) {
+    const syncResult = invokeAuthSync(sourceCodexAuthPath, runtimeHermesAuthPath, syncScriptPath, watchdogConfig.syncSkewSeconds);
+    state.sync = {
+      ok: syncResult.ok,
+      raw: syncResult.raw,
+      summary: syncResult.summary
+    };
+
+    if (syncResult.ok && gatewayAvailable) {
+      const stopResult = stopProcessById(gatewayProcess.pid);
+      state.restart = {
+        mode: "kill_gateway_pid",
+        pid: gatewayProcess.pid,
+        ok: stopResult.ok,
+        detail: stopResult.detail
+      };
+      state.lifecycle_status = stopResult.ok ? "recovering" : "degraded";
+      state.action = stopResult.ok ? "restarted_gateway" : "sync_only";
+      state.reason = stopResult.ok ? "stuck_gateway_with_new_auth" : "gateway_stop_failed";
+      state.next_action = stopResult.ok
+        ? "The Hermes launcher should re-run auth sync and restart the gateway automatically."
+        : "Review the Hermes launcher because sync succeeded but stopping the stuck gateway failed.";
+    }
+    else if (syncResult.ok) {
+      const startResult = runTask(watchdogConfig.gatewayTaskPath, watchdogConfig.gatewayTaskName);
+      state.restart = {
+        mode: "run_gateway_task",
+        ok: startResult.ok,
+        detail: startResult.detail
+      };
+      state.lifecycle_status = startResult.ok ? "recovering" : "degraded";
+      state.action = startResult.ok ? "started_gateway_task" : "sync_only";
+      state.reason = startResult.ok ? "gateway_not_running_after_sync" : "gateway_task_start_failed";
+      state.next_action = startResult.ok
+        ? "Wait for the Hermes launcher to start the gateway with refreshed auth."
+        : "Review the Hermes Gateway task because RanchMind could sync auth but could not start the launcher task.";
+    }
+    else {
+      state.lifecycle_status = "degraded";
+      state.action = "sync_failed";
+      state.reason = "runtime_sync_failed";
+      state.next_action = "Review the sync script or auth files because RanchMind could not refresh the Hermes runtime auth.";
+    }
+  }
+  else if (!gatewayAvailable) {
+    if (runtimeNeedsSync) {
+      const syncResult = invokeAuthSync(sourceCodexAuthPath, runtimeHermesAuthPath, syncScriptPath, watchdogConfig.syncSkewSeconds);
+      state.sync = {
+        ok: syncResult.ok,
+        raw: syncResult.raw,
+        summary: syncResult.summary
+      };
+      if (!syncResult.ok) {
+        state.lifecycle_status = "degraded";
+        state.action = "sync_failed";
+        state.reason = "gateway_down_and_sync_failed";
+        state.next_action = "Fix auth sync first, then re-run the watchdog.";
+      }
+    }
+
+    if (state.lifecycle_status !== "degraded") {
+      const startResult = runTask(watchdogConfig.gatewayTaskPath, watchdogConfig.gatewayTaskName);
+      state.restart = {
+        mode: "run_gateway_task",
+        ok: startResult.ok,
+        detail: startResult.detail
+      };
+      state.lifecycle_status = startResult.ok ? "recovering" : "degraded";
+      state.action = startResult.ok ? "started_gateway_task" : "task_start_failed";
+      state.reason = startResult.ok ? "gateway_not_running" : "gateway_task_start_failed";
+      state.next_action = startResult.ok
+        ? "Wait for the Hermes launcher to restore the Feishu gateway."
+        : "Inspect the Hermes Gateway task and launcher logs because the gateway is down and the task could not be started.";
+    }
+  }
+  else if (runtimeNeedsSync && !logAnalysis.stuck) {
+    const syncResult = invokeAuthSync(sourceCodexAuthPath, runtimeHermesAuthPath, syncScriptPath, watchdogConfig.syncSkewSeconds);
+    state.sync = {
+      ok: syncResult.ok,
+      raw: syncResult.raw,
+      summary: syncResult.summary
+    };
+    state.lifecycle_status = syncResult.ok ? "healthy" : "degraded";
+    state.action = syncResult.ok ? "synced_runtime_auth" : "sync_failed";
+    state.reason = syncResult.ok ? "runtime_auth_drift" : "runtime_sync_failed";
+    state.next_action = syncResult.ok
+      ? "Runtime auth drift was corrected without restarting the gateway."
+      : "Review runtime auth because RanchMind detected drift but could not sync it.";
+  }
+
+  writeJsonFile(paths.resultPath, state);
+  writeJsonFile(paths.latestPath, state);
+  fs.writeFileSync(paths.latestMarkdownPath, buildFeishuMarkdown(state), "utf8");
+  appendJsonLine(paths.historyPath, state);
+
+  process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
+  return 0;
+}
+
 function registerWindowsTask(config, taskTime, disableLegacy) {
   const schedulerConfig = getSchedulerConfig(config);
   const effectiveTaskTime = taskTime ?? schedulerConfig?.taskTime ?? "10:20";
@@ -1124,13 +1672,61 @@ function registerTraining() {
   throw new Error(`Unsupported scheduler kind "${schedulerConfig.kind}".`);
 }
 
+function registerFeishuWatchdog() {
+  if (platform !== "win32") {
+    throw new Error("Feishu watchdog registration is currently implemented for Windows only.");
+  }
+
+  const config = loadConfig();
+  const watchdogConfig = getFeishuWatchdogConfig(config);
+  const xmlPath = path.join(rootDir, "state", "tmp", "ranchmind-feishu-watchdog.xml");
+  ensureDirectory(path.dirname(xmlPath));
+  const argumentsText = `${windowsQuote(path.join(rootDir, "scripts", "ranchmind.mjs"))} ensure-feishu-runtime`;
+  const xml = buildWindowsRepeatedTaskXml(
+    watchdogConfig.taskPath,
+    watchdogConfig.taskName,
+    watchdogConfig.taskTime,
+    watchdogConfig.repeatMinutes,
+    "RanchMind Feishu runtime watchdog.",
+    process.execPath,
+    argumentsText,
+    rootDir
+  );
+
+  fs.writeFileSync(xmlPath, `\uFEFF${xml}`, "utf16le");
+  const fullName = `${ensureWindowsTaskPath(watchdogConfig.taskPath)}${watchdogConfig.taskName}`;
+  const createResult = runCommand("schtasks.exe", ["/Create", "/TN", fullName, "/XML", xmlPath, "/F"]);
+  fs.rmSync(xmlPath, { force: true });
+  commandOrThrow(createResult, "Failed to create Feishu watchdog task");
+
+  const query = getTaskQuery(watchdogConfig.taskPath, watchdogConfig.taskName);
+  process.stdout.write(`${JSON.stringify({
+    status: "ok",
+    kind: "windows-task",
+    task_path: ensureWindowsTaskPath(watchdogConfig.taskPath),
+    task_name: watchdogConfig.taskName,
+    task_time: watchdogConfig.taskTime,
+    repeat_minutes: watchdogConfig.repeatMinutes,
+    entrypoint: {
+      command: process.execPath,
+      script: path.join(rootDir, "scripts", "ranchmind.mjs"),
+      args: ["ensure-feishu-runtime"]
+    },
+    query
+  }, null, 2)}\n`);
+  return 0;
+}
+
 function status() {
   const config = loadConfig();
   const summary = summarizeLatestReceipt();
   const latestMarkdownPath = path.join(rootDir, "state", "memory", "training-latest.md");
   const latestRunPath = path.join(rootDir, "state", "memory", "training-latest-run.json");
+  const latestFeishuPath = path.join(rootDir, "state", "memory", "feishu-runtime-latest.json");
   const latestRun = fs.existsSync(latestRunPath) ? readJson(latestRunPath) : null;
+  const latestFeishu = fs.existsSync(latestFeishuPath) ? readJson(latestFeishuPath) : null;
   const hermesConfig = getHermesConfig(config);
+  const watchdogConfig = getFeishuWatchdogConfig(config);
   const hermesLogPath = hermesConfig?.gatewayLog ? resolvePathLike(hermesConfig.gatewayLog, getContext()) : "";
   let hermesLogTail = [];
   if (hermesLogPath && fs.existsSync(hermesLogPath)) {
@@ -1155,11 +1751,16 @@ function status() {
     latest_run_path: latestRunPath,
     latest_receipt: summary.latestReceiptSummary ?? null,
     latest_harness_run: latestRun,
+    latest_feishu_runtime: latestFeishu,
     scheduler: schedulerStatus,
     hermes: {
       task_name: hermesConfig?.taskName ?? "",
       gateway_log: hermesLogPath,
       gateway_log_tail: hermesLogTail
+    },
+    feishu_watchdog: {
+      task: getTaskQuery(watchdogConfig.taskPath, watchdogConfig.taskName),
+      latest_state_path: latestFeishuPath
     }
   }, null, 2)}\n`);
   return 0;
@@ -1169,6 +1770,8 @@ function help() {
   console.log("RanchMind commands:");
   console.log("  node ./scripts/ranchmind.mjs run-training [--date YYYY-MM-DD] [--force] [--source TEXT]");
   console.log("  node ./scripts/ranchmind.mjs register-training [--task-time HH:mm] [--disable-legacy]");
+  console.log("  node ./scripts/ranchmind.mjs ensure-feishu-runtime");
+  console.log("  node ./scripts/ranchmind.mjs register-feishu-watchdog");
   console.log("  node ./scripts/ranchmind.mjs status");
 }
 
@@ -1186,6 +1789,14 @@ function main() {
 
   if (command === "register-training") {
     return registerTraining();
+  }
+
+  if (command === "ensure-feishu-runtime") {
+    return ensureFeishuRuntime();
+  }
+
+  if (command === "register-feishu-watchdog") {
+    return registerFeishuWatchdog();
   }
 
   if (command === "status") {

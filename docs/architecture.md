@@ -106,6 +106,32 @@ RanchMind intentionally separates two cases:
 
 That prevents the common anti-pattern where a scheduler keeps rerunning a bad job indefinitely just because the previous run did not look good enough.
 
+## Feishu runtime persistence
+
+The messaging side has a different failure mode from the training lane: a gateway can stay **alive but broken** for hours if upstream auth is rejected and no component takes responsibility for classifying the state.
+
+RanchMind now treats the Feishu-facing runtime as a supervised subsystem with four steps:
+
+1. **Inspect**
+   - source Codex auth
+   - Hermes runtime auth pool state
+   - gateway PID/state files
+   - recent gateway log tail
+2. **Classify**
+   - healthy
+   - recovering
+   - degraded
+   - blocked
+3. **Act**
+   - sync runtime auth when the source token is healthy
+   - start the Hermes Gateway task if the gateway is down
+   - kill the stuck gateway PID so the existing Hermes launcher can restart it
+   - refuse to restart when the source token fingerprint matches a server-rejected token
+4. **Persist**
+   - write durable watchdog state into the Human plane memory
+
+The key design choice is that RanchMind does **not** try to replace Hermes' launcher loop. It supervises it from above and only nudges it when the current state justifies intervention.
+
 ## Cross-platform runtime layer
 
 The current repo now treats the control layer as **portable**, with platform adapters below it.

@@ -107,5 +107,21 @@
       ],
       "metricThresholds": {}
     }
+  },
+  "feishuWatchdog": {
+    "failureThreshold": 3,
+    "taskPath": "\\RanchMind\\",
+    "taskName": "RanchMindFeishuWatchdog",
+    "taskTime": "00:00",
+    "repeatMinutes": 5,
+    "sourceCodexAuthPath": "%USERPROFILE%\\.codex\\auth.json",
+    "runtimeHermesAuthPath": "%USERPROFILE%\\.hermes-windows\\runtime\\auth.json",
+    "gatewayStatePath": "%USERPROFILE%\\.hermes-windows\\runtime\\gateway_state.json",
+    "gatewayPidPath": "%USERPROFILE%\\.hermes-windows\\runtime\\gateway.pid",
+    "syncScriptPath": "%USERPROFILE%\\.hermes-windows\\Sync-CodexAuthToHermes.ps1",
+    "gatewayTaskName": "Hermes Gateway",
+    "gatewayTaskPath": "\\",
+    "syncSkewSeconds": 3600,
+    "logTailLines": 200
   }
 }

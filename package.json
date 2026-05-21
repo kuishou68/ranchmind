@@ -10,6 +10,8 @@
     "lint": "echo No lint configured yet",
     "status": "node ./scripts/ranchmind.mjs status",
     "run:training": "node ./scripts/ranchmind.mjs run-training",
-    "register:training": "node ./scripts/ranchmind.mjs register-training --disable-legacy"
+    "register:training": "node ./scripts/ranchmind.mjs register-training --disable-legacy",
+    "ensure:feishu": "node ./scripts/ranchmind.mjs ensure-feishu-runtime",
+    "register:feishu": "node ./scripts/ranchmind.mjs register-feishu-watchdog"
   }
 }
