@@ -5,6 +5,13 @@
 
 RanchMind is a **closed-loop agent runtime** designed to integrate execution, scheduling, and memory into a unified control plane.
 
+It now includes a **harness-driven runtime** for long-running work:
+
+- a **planner contract** written before execution starts
+- a **generator/executor** that performs the work
+- an **evaluator** that judges the result against explicit acceptance checks
+- durable handoff artifacts so the next run can inspect what happened instead of starting blind
+
 ---
 
 ## 🎨 Visual Concept
@@ -89,12 +96,30 @@ This repository includes a working MVP for the **Windows KD training workflow**.
 # Check status of the system
 node ./scripts/ranchmind.mjs status
 
-# Run a manual training task
+# Run a manual harnessed training task
 node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
 
 # Register the task in Windows Task Scheduler
 node ./scripts/ranchmind.mjs register-training --disable-legacy
 ```
+
+### Harness runtime
+
+For the training lane, `run-training` is now a full harness, not a thin wrapper:
+
+1. **Plan / contract**
+   - writes `contract.json`
+   - freezes retry policy, acceptance checks, command, args, and scheduler context
+2. **Execute**
+   - runs the configured training adapter
+   - records each attempt into `attempts/attempt-NN.json`
+3. **Evaluate**
+   - separately checks outcome status and required artifacts
+   - retries only execution failures
+   - blocks metric/policy failures for operator review instead of looping blindly
+4. **Finalize**
+   - writes `evaluation.json`, `run-state.json`, and `final-receipt.json`
+   - updates the legacy `training-latest.json` / `.md` memory files for backward compatibility
 
 ### Platform Adapters
 
@@ -104,7 +129,33 @@ node ./scripts/ranchmind.mjs register-training --disable-legacy
 | **macOS** | CLI (Configurable) | cron |
 | **Linux** | CLI (Configurable) | cron |
 
-State is stored locally under `state/memory/` and `state/receipts/`.
+State is stored locally under `state/memory/`, `state/receipts/`, and `state/runs/`.
+
+### Durable run artifacts
+
+Each harness run creates a dedicated directory:
+
+```text
+state/
+  runs/
+    training-<timestamp>/
+      contract.json
+      run-state.json
+      evaluation.json
+      final-receipt.json
+      attempts/
+        attempt-01.json
+        attempt-02.json
+```
+
+This is the core change inspired by Anthropic's harness design: RanchMind no longer assumes one fire-and-forget execution is enough. It preserves the contract, each attempt, and the evaluator decision as structured artifacts.
+
+### Reliability model
+
+- **Automatic retries** are only for execution failures such as process errors, malformed output, or missing artifacts.
+- **Accepted no-op outcomes** like trading-day skips are treated as successful runs, not failures.
+- **Quality/policy failures** become `blocked` and require operator review; RanchMind does not auto-loop forever on weak metrics.
+- **Scheduled Windows runs** now execute the Node harness entrypoint directly rather than bypassing it with a raw PowerShell wrapper.
 
 ---
 
@@ -127,7 +178,7 @@ ranchmind/
 
 ## 🎯 Initial Roadmap
 
-- [ ] Unified run ledger across all three planes.
+- [x] Harness-style run ledger for the training lane.
 - [ ] Operator review UI for scheduled task results.
 - [ ] Memory-fed dynamic scheduling rules.
 - [ ] Pluggable channel delivery (Slack/Feishu/Telegram).

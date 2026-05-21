@@ -72,6 +72,40 @@ Does not own:
 5. **Next action**
    - future dispatch can consult memory, policy, and operator context
 
+## Harness layer for long-running work
+
+The training lane now uses a harness modeled on Anthropic's long-running app design:
+
+1. **Planner / contract**
+   - writes a structured `contract.json`
+   - freezes execution inputs, retry policy, and evaluator criteria
+2. **Generator / executor**
+   - performs one concrete attempt at the task
+   - writes a durable attempt artifact before the evaluator makes any decision
+3. **Evaluator**
+   - judges the attempt against explicit checks
+   - accepts, retries, or blocks
+4. **Handoff**
+   - `run-state.json` and `evaluation.json` tell the next session exactly what happened
+
+This matters because the main failure mode of semi-automatic systems is not "one bug." It is the lack of a durable control loop. Without a contract and evaluator, the scheduler can only launch work and hope.
+
+### What RanchMind now preserves
+
+- the agreed contract for the run
+- each attempt and its raw output
+- the evaluator's checks and final decision
+- the final receipt that updates the Human plane memory
+
+### Retry boundaries
+
+RanchMind intentionally separates two cases:
+
+- **Execution failure** -> automatic retry
+- **Policy / metric failure** -> block for operator review
+
+That prevents the common anti-pattern where a scheduler keeps rerunning a bad job indefinitely just because the previous run did not look good enough.
+
 ## Cross-platform runtime layer
 
 The current repo now treats the control layer as **portable**, with platform adapters below it.
@@ -80,6 +114,7 @@ The current repo now treats the control layer as **portable**, with platform ada
 
 - `scripts/ranchmind.mjs`
 - config loading and token expansion
+- planner / evaluator orchestration
 - receipt writing
 - memory ledger updates
 - platform detection
@@ -89,7 +124,7 @@ The current repo now treats the control layer as **portable**, with platform ada
 #### Windows
 
 - training via the existing KD PowerShell script
-- scheduling via Windows Scheduled Task
+- scheduling via Windows Scheduled Task that now calls the Node harness entrypoint
 - status via `schtasks.exe` and local receipt inspection
 
 #### macOS / Linux

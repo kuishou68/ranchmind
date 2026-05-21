@@ -87,5 +87,25 @@
         "taskTime": "10:20"
       }
     }
+  },
+  "harness": {
+    "maxAttempts": 2,
+    "retryDelaySeconds": 15,
+    "runsRetainDays": 30,
+    "evaluator": {
+      "acceptStatuses": [
+        "ok",
+        "skipped"
+      ],
+      "requiredArtifactsOnOk": [
+        "authoritative_status_json",
+        "output_json",
+        "latest_json"
+      ],
+      "requiredOutcomeFieldsOnOk": [
+        "target_end_date"
+      ],
+      "metricThresholds": {}
+    }
   }
 }

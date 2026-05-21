@@ -75,12 +75,13 @@ function Register-WithPrincipal {
     param(
         [string]$CurrentTaskPath,
         [string]$CurrentTaskName,
+        [string]$Execute,
         [string]$Arguments,
         [string]$CurrentTaskTime,
         [string]$LogonType
     )
 
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Arguments
+    $action = New-ScheduledTaskAction -Execute $Execute -Argument $Arguments
     $trigger = New-ScheduledTaskTrigger -Daily -At (Resolve-DailyTriggerAt -TimeText $CurrentTaskTime)
     $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType $LogonType -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet `
@@ -113,21 +114,22 @@ if (-not $resolvedTaskPath.EndsWith("\")) {
     $resolvedTaskPath = "$resolvedTaskPath\"
 }
 
-$scriptPath = Join-Path $PSScriptRoot "Invoke-RanchMindNonTradingTraining.ps1"
+$nodeCommand = (Get-Command node -ErrorAction Stop).Source
+$scriptPath = Join-Path (Join-Path $ranchMindRoot "scripts") "ranchmind.mjs"
 $arguments = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", (Convert-ToProcessArgument -Value (Resolve-Path $scriptPath).Path),
-    "-InvocationSource", "scheduled_task"
+    (Convert-ToProcessArgument -Value $nodeCommand),
+    (Convert-ToProcessArgument -Value (Resolve-Path $scriptPath).Path),
+    "run-training",
+    "--source", "scheduled_task"
 ) -join " "
 
 $principalLogonType = "S4U"
 try {
-    Register-WithPrincipal -CurrentTaskPath $resolvedTaskPath -CurrentTaskName $resolvedTaskName -Arguments $arguments -CurrentTaskTime $resolvedTaskTime -LogonType "S4U"
+    Register-WithPrincipal -CurrentTaskPath $resolvedTaskPath -CurrentTaskName $resolvedTaskName -Execute $nodeCommand -Arguments $arguments -CurrentTaskTime $resolvedTaskTime -LogonType "S4U"
 }
 catch {
     $principalLogonType = "Interactive"
-    Register-WithPrincipal -CurrentTaskPath $resolvedTaskPath -CurrentTaskName $resolvedTaskName -Arguments $arguments -CurrentTaskTime $resolvedTaskTime -LogonType "Interactive"
+    Register-WithPrincipal -CurrentTaskPath $resolvedTaskPath -CurrentTaskName $resolvedTaskName -Execute $nodeCommand -Arguments $arguments -CurrentTaskTime $resolvedTaskTime -LogonType "Interactive"
 }
 
 $legacyTaskDisabled = $false
@@ -145,6 +147,7 @@ if ($DisableLegacyKdTask.IsPresent) {
     task_name = $resolvedTaskName
     task_time = $resolvedTaskTime
     task_script = (Resolve-Path $scriptPath).Path
+    task_command = $nodeCommand
     principal_logon_type = $principalLogonType
     legacy_task_disabled = $legacyTaskDisabled
     legacy_task_path = [string]$config.kd.legacyTaskPath

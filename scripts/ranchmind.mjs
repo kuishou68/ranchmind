@@ -47,6 +47,28 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+function windowsQuote(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sleepMilliseconds(milliseconds) {
+  if (!milliseconds || milliseconds <= 0) {
+    return;
+  }
+
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, milliseconds);
+}
+
+function ensureDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+}
+
 function runCommand(command, args, options = {}) {
   return spawnSync(command, args, {
     cwd: options.cwd ?? rootDir,
@@ -62,12 +84,12 @@ function readJson(filePath) {
 }
 
 function writeJsonFile(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  ensureDirectory(path.dirname(filePath));
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function appendJsonLine(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  ensureDirectory(path.dirname(filePath));
   fs.appendFileSync(filePath, `${JSON.stringify(value)}\n`, "utf8");
 }
 
@@ -118,6 +140,20 @@ function getContext({ dateText = null, invocationSource = null } = {}) {
     platform,
     dateText,
     invocationSource
+  };
+}
+
+function getHarnessConfig(config) {
+  return {
+    maxAttempts: config.harness?.maxAttempts ?? 2,
+    retryDelaySeconds: config.harness?.retryDelaySeconds ?? 15,
+    runsRetainDays: config.harness?.runsRetainDays ?? 30,
+    evaluator: {
+      acceptStatuses: config.harness?.evaluator?.acceptStatuses ?? ["ok", "skipped"],
+      requiredArtifactsOnOk: config.harness?.evaluator?.requiredArtifactsOnOk ?? ["authoritative_status_json", "output_json", "latest_json"],
+      requiredOutcomeFieldsOnOk: config.harness?.evaluator?.requiredOutcomeFieldsOnOk ?? ["target_end_date"],
+      metricThresholds: config.harness?.evaluator?.metricThresholds ?? {}
+    }
   };
 }
 
@@ -201,6 +237,10 @@ function buildMarkdownSummary(receipt) {
   const lines = [
     "# RanchMind Training Summary",
     "",
+    `- harness_status: ${receipt.harness.lifecycle_status}`,
+    `- harness_decision: ${receipt.harness.final_decision}`,
+    `- attempts: ${receipt.harness.attempts}/${receipt.harness.max_attempts}`,
+    `- run_id: ${receipt.harness.run_id}`,
     `- status: ${receipt.outcome.status}`,
     `- invocation_source: ${receipt.invocation_source}`,
     `- requested_date: ${receipt.requested_date}`,
@@ -208,6 +248,9 @@ function buildMarkdownSummary(receipt) {
     `- generated_at: ${receipt.generated_at}`
   ];
 
+  if (receipt.harness.next_action) {
+    lines.push(`- next_action: ${receipt.harness.next_action}`);
+  }
   if (receipt.outcome.reason) {
     lines.push(`- reason: ${receipt.outcome.reason}`);
   }
@@ -223,6 +266,12 @@ function buildMarkdownSummary(receipt) {
     lines.push(`- full_final_equity: ${summary.full_final_equity ?? ""}`);
     lines.push(`- full_max_drawdown: ${summary.full_max_drawdown ?? ""}`);
   }
+
+  lines.push("", "## Harness", "");
+  lines.push(`- run_dir: ${receipt.harness.run_dir}`);
+  lines.push(`- contract_path: ${receipt.harness.contract_path}`);
+  lines.push(`- evaluation_path: ${receipt.harness.evaluation_path}`);
+  lines.push(`- run_state_path: ${receipt.harness.run_state_path}`);
 
   lines.push("", "## Artifacts", "");
   lines.push(`- authoritative_status_json: ${receipt.authoritative_status_json}`);
@@ -303,14 +352,15 @@ function buildWindowsTaskXml(taskPath, taskName, taskTime) {
   const now = new Date();
   const startBoundary = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${paddedHour}:${paddedMinute}:00`;
   const userId = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : process.env.USERNAME;
-  const scriptPath = path.join(rootDir, "packages", "horse-plane", "scripts", "Invoke-RanchMindNonTradingTraining.ps1");
-  const argumentsText = `-NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" -InvocationSource scheduled_task`;
   const taskUri = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
+  const command = process.execPath;
+  const scriptPath = path.join(rootDir, "scripts", "ranchmind.mjs");
+  const argumentsText = `${windowsQuote(scriptPath)} run-training --source scheduled_task`;
 
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>RanchMind daily non-trading factor training orchestrator.</Description>
+    <Description>RanchMind harness-driven non-trading factor training orchestrator.</Description>
     <URI>${escapeXml(taskUri)}</URI>
   </RegistrationInfo>
   <Triggers>
@@ -351,8 +401,9 @@ function buildWindowsTaskXml(taskPath, taskName, taskTime) {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>${escapeXml(command)}</Command>
       <Arguments>${escapeXml(argumentsText)}</Arguments>
+      <WorkingDirectory>${escapeXml(rootDir)}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>
@@ -403,14 +454,24 @@ function summarizeLatestReceipt() {
 
   return {
     latestReceiptPath,
-    latestReceipt: {
+    latestReceipt,
+    latestReceiptSummary: {
       generated_at: latestReceipt.generated_at,
       requested_date: latestReceipt.requested_date,
       invocation_source: latestReceipt.invocation_source,
       outcome_status: latestReceipt.outcome.status,
       outcome_reason: latestReceipt.outcome.reason ?? "",
       outcome_target_end_date: latestReceipt.outcome.target_end_date ?? "",
-      outcome_summary: outcomeSummary
+      outcome_summary: outcomeSummary,
+      harness: latestReceipt.harness
+        ? {
+            run_id: latestReceipt.harness.run_id,
+            lifecycle_status: latestReceipt.harness.lifecycle_status,
+            final_decision: latestReceipt.harness.final_decision,
+            attempts: latestReceipt.harness.attempts,
+            next_action: latestReceipt.harness.next_action
+          }
+        : null
     }
   };
 }
@@ -425,66 +486,382 @@ function commandOrThrow(result, failureMessage) {
   }
 }
 
-function runTraining() {
-  const config = loadConfig();
-  const dateText = parseFlag("--date") ?? new Date().toISOString().slice(0, 10);
-  const invocationSource = parseFlag("--source") ?? "ranchmind.manual";
-  const force = process.argv.includes("--force");
+function makeRunId() {
+  const stamp = nowIso().replace(/[-:]/g, "").replace(/\./g, "").replace("T", "-").replace("Z", "");
+  return `training-${stamp}`;
+}
+
+function getMetricValue(outcome, metricPath) {
+  return metricPath.split(".").reduce((current, key) => (current && typeof current === "object" ? current[key] : undefined), outcome);
+}
+
+function trimOldRunDirectories(runsRoot, retainDays) {
+  if (!fs.existsSync(runsRoot)) {
+    return;
+  }
+
+  const cutoff = Date.now() - (retainDays * 24 * 60 * 60 * 1000);
+  for (const entry of fs.readdirSync(runsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const fullPath = path.join(runsRoot, entry.name);
+    const stats = fs.statSync(fullPath);
+    if (stats.mtimeMs < cutoff) {
+      fs.rmSync(fullPath, { recursive: true, force: true });
+    }
+  }
+}
+
+function buildTrainingInvocation(config, dateText, invocationSource, forceRun) {
   const context = getContext({ dateText, invocationSource });
   const adapter = getTrainingAdapter(config);
   const command = renderTemplate(adapter.command, context);
   const args = [...(adapter.args ?? [])].map((value) => renderTemplate(value, context));
-  if (force && Array.isArray(adapter.forceArgs)) {
+  if (forceRun && Array.isArray(adapter.forceArgs)) {
     args.push(...adapter.forceArgs.map((value) => renderTemplate(value, context)));
   }
 
-  const workingDirectory = adapter.workingDirectory ? resolvePathLike(adapter.workingDirectory, context) : rootDir;
-  const authoritativeStatusJson = adapter.authoritativeStatusPath
-    ? resolvePathLike(adapter.authoritativeStatusPath, context)
-    : "";
+  return {
+    adapter,
+    command,
+    args,
+    workingDirectory: adapter.workingDirectory ? resolvePathLike(adapter.workingDirectory, context) : rootDir,
+    authoritativeStatusJson: adapter.authoritativeStatusPath ? resolvePathLike(adapter.authoritativeStatusPath, context) : ""
+  };
+}
 
-  const result = runCommand(command, args, { cwd: workingDirectory });
-  if (result.error) {
-    throw result.error;
-  }
-
-  const rawOutput = `${result.stdout ?? ""}`.trim() || `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  if (!rawOutput) {
-    throw new Error("Training adapter returned no output.");
-  }
-
-  let outcome;
-  try {
-    outcome = JSON.parse(rawOutput);
-  }
-  catch {
-    throw new Error(`Training adapter returned non-JSON output: ${rawOutput}`);
-  }
-
+function buildRunArtifacts(runId) {
   const stateRoot = path.join(rootDir, "state");
+  const runsRoot = path.join(stateRoot, "runs");
+  const runDir = path.join(runsRoot, runId);
+  const attemptsDir = path.join(runDir, "attempts");
   const receiptsRoot = path.join(stateRoot, "receipts", "training");
   const memoryRoot = path.join(stateRoot, "memory");
-  fs.mkdirSync(receiptsRoot, { recursive: true });
-  fs.mkdirSync(memoryRoot, { recursive: true });
 
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
-  const receiptPath = path.join(receiptsRoot, `ranchmind-training-${stamp}.json`);
-  const latestReceiptPath = path.join(memoryRoot, "training-latest.json");
-  const latestMarkdownPath = path.join(memoryRoot, "training-latest.md");
-  const historyPath = path.join(memoryRoot, "training-history.jsonl");
+  return {
+    stateRoot,
+    runsRoot,
+    runDir,
+    attemptsDir,
+    receiptsRoot,
+    memoryRoot,
+    contractPath: path.join(runDir, "contract.json"),
+    runStatePath: path.join(runDir, "run-state.json"),
+    evaluationPath: path.join(runDir, "evaluation.json"),
+    finalReceiptPath: path.join(runDir, "final-receipt.json"),
+    latestReceiptPath: path.join(memoryRoot, "training-latest.json"),
+    latestMarkdownPath: path.join(memoryRoot, "training-latest.md"),
+    latestRunPath: path.join(memoryRoot, "training-latest-run.json"),
+    historyPath: path.join(memoryRoot, "training-history.jsonl")
+  };
+}
+
+function createRunContract(config, harnessConfig, dateText, invocationSource, requestedForce, invocation) {
   const schedulerConfig = getSchedulerConfig(config);
 
-  const receipt = {
-    generated_at: new Date().toISOString(),
-    requested_date: dateText,
-    invocation_source: invocationSource,
-    receipt_path: receiptPath,
-    authoritative_status_json: authoritativeStatusJson,
+  return {
+    run_type: "training",
+    created_at: nowIso(),
+    planner: {
+      style: "structured-contract",
+      summary: "Execute the configured training adapter, then evaluate status and artifact completeness before accepting the run."
+    },
+    request: {
+      requested_date: dateText,
+      invocation_source: invocationSource,
+      force_requested: requestedForce
+    },
+    retry_policy: {
+      max_attempts: harnessConfig.maxAttempts,
+      retry_delay_seconds: harnessConfig.retryDelaySeconds,
+      retryable_failures: [
+        "process_error",
+        "non_json_output",
+        "empty_output",
+        "non_zero_exit",
+        "missing_artifact"
+      ],
+      retry_behavior: "Only execution failures retry automatically. Metric or policy failures block for operator review.",
+      retry_force_behavior: "Retry attempts use force=true to recover from partial prior outputs."
+    },
+    evaluator: {
+      accept_statuses: harnessConfig.evaluator.acceptStatuses,
+      required_artifacts_on_ok: harnessConfig.evaluator.requiredArtifactsOnOk,
+      required_outcome_fields_on_ok: harnessConfig.evaluator.requiredOutcomeFieldsOnOk,
+      metric_thresholds: harnessConfig.evaluator.metricThresholds
+    },
+    execution: {
+      platform,
+      command: invocation.command,
+      args: invocation.args,
+      working_directory: invocation.workingDirectory,
+      authoritative_status_json: invocation.authoritativeStatusJson
+    },
+    scheduler: schedulerConfig
+      ? {
+          kind: schedulerConfig.kind,
+          task_path: schedulerConfig.taskPath ?? "",
+          task_name: schedulerConfig.taskName ?? "",
+          task_time: schedulerConfig.taskTime ?? ""
+        }
+      : {
+          kind: "none",
+          task_path: "",
+          task_name: "",
+          task_time: ""
+        }
+  };
+}
+
+function writeRunState(paths, previousState, patch) {
+  const nextState = {
+    ...(previousState ?? {}),
+    ...patch,
+    updated_at: nowIso()
+  };
+  writeJsonFile(paths.runStatePath, nextState);
+  return nextState;
+}
+
+function executeTrainingAttempt(config, runContext, attemptNumber, forceRun) {
+  const invocation = buildTrainingInvocation(config, runContext.dateText, runContext.invocationSource, forceRun);
+  const startedAt = nowIso();
+  const result = runCommand(invocation.command, invocation.args, { cwd: invocation.workingDirectory });
+  const finishedAt = nowIso();
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  const combined = `${stdout}${stderr}`.trim();
+
+  const record = {
+    attempt: attemptNumber,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    force: forceRun,
+    platform,
+    command: invocation.command,
+    args: invocation.args,
+    working_directory: invocation.workingDirectory,
+    authoritative_status_json: invocation.authoritativeStatusJson,
+    exit_code: result.status ?? 1,
+    stdout,
+    stderr,
+    raw_output: stdout.trim() || combined
+  };
+
+  if (result.error) {
+    record.process_error = result.error.message;
+    return record;
+  }
+
+  if (!record.raw_output) {
+    record.parse_error = "Training adapter returned no output.";
+    return record;
+  }
+
+  try {
+    record.outcome = JSON.parse(record.raw_output);
+  }
+  catch {
+    record.parse_error = `Training adapter returned non-JSON output: ${record.raw_output}`;
+  }
+
+  return record;
+}
+
+function evaluateAttempt(harnessConfig, attemptRecord) {
+  const checks = [];
+
+  if (attemptRecord.process_error) {
+    return {
+      decision: "retry",
+      lifecycle_status: "retrying",
+      reason: "process_error",
+      next_action: "Retry automatically because the adapter process failed to launch or complete cleanly.",
+      checks: [{ name: "process_error", status: "fail", message: attemptRecord.process_error }]
+    };
+  }
+
+  if (attemptRecord.parse_error) {
+    return {
+      decision: "retry",
+      lifecycle_status: "retrying",
+      reason: "non_json_output",
+      next_action: "Retry automatically because the adapter output was empty or malformed.",
+      checks: [{ name: "parse_output", status: "fail", message: attemptRecord.parse_error }]
+    };
+  }
+
+  if ((attemptRecord.exit_code ?? 1) !== 0) {
+    return {
+      decision: "retry",
+      lifecycle_status: "retrying",
+      reason: "non_zero_exit",
+      next_action: "Retry automatically because the adapter exited non-zero.",
+      checks: [{ name: "exit_code", status: "fail", message: `Exit code was ${attemptRecord.exit_code}.` }]
+    };
+  }
+
+  const outcome = attemptRecord.outcome ?? {};
+  const status = outcome.status ?? "";
+  checks.push({
+    name: "status",
+    status: harnessConfig.evaluator.acceptStatuses.includes(status) ? "pass" : "fail",
+    message: `Adapter reported status "${status}".`
+  });
+
+  if (!harnessConfig.evaluator.acceptStatuses.includes(status)) {
+    return {
+      decision: "blocked",
+      lifecycle_status: "blocked",
+      reason: "unexpected_status",
+      next_action: "Review the adapter outcome manually before re-running.",
+      checks
+    };
+  }
+
+  if (status === "skipped") {
+    return {
+      decision: "pass",
+      lifecycle_status: "completed",
+      reason: outcome.reason ?? "skip_accepted",
+      next_action: "No retry required; the lane ran and decided no work was needed.",
+      checks
+    };
+  }
+
+  for (const fieldName of harnessConfig.evaluator.requiredOutcomeFieldsOnOk) {
+    const present = outcome[fieldName] !== undefined && outcome[fieldName] !== null && String(outcome[fieldName]) !== "";
+    checks.push({
+      name: `outcome_field:${fieldName}`,
+      status: present ? "pass" : "fail",
+      message: present ? `Outcome field "${fieldName}" is present.` : `Outcome field "${fieldName}" is missing.`
+    });
+    if (!present) {
+      return {
+        decision: "blocked",
+        lifecycle_status: "blocked",
+        reason: "missing_outcome_field",
+        next_action: "Review the adapter output schema before re-running.",
+        checks
+      };
+    }
+  }
+
+  for (const artifactName of harnessConfig.evaluator.requiredArtifactsOnOk) {
+    const artifactPath = artifactName === "authoritative_status_json"
+      ? attemptRecord.authoritative_status_json
+      : outcome[artifactName];
+    const exists = Boolean(artifactPath) && fs.existsSync(artifactPath);
+    checks.push({
+      name: `artifact:${artifactName}`,
+      status: exists ? "pass" : "fail",
+      message: exists ? artifactPath : `Required artifact "${artifactName}" is missing or unreadable.`
+    });
+    if (!exists) {
+      return {
+        decision: "retry",
+        lifecycle_status: "retrying",
+        reason: "missing_artifact",
+        next_action: "Retry automatically because execution completed but required artifacts were missing.",
+        checks
+      };
+    }
+  }
+
+  for (const [metricPath, threshold] of Object.entries(harnessConfig.evaluator.metricThresholds)) {
+    const value = getMetricValue(outcome, metricPath);
+    if (threshold.min !== undefined) {
+      const pass = typeof value === "number" && value >= threshold.min;
+      checks.push({
+        name: `metric:${metricPath}:min`,
+        status: pass ? "pass" : "fail",
+        message: pass
+          ? `${metricPath}=${value} meets minimum ${threshold.min}.`
+          : `${metricPath}=${value ?? "missing"} is below minimum ${threshold.min}.`
+      });
+      if (!pass) {
+        return {
+          decision: "blocked",
+          lifecycle_status: "blocked",
+          reason: "metric_below_threshold",
+          next_action: "Review the quality gate manually; RanchMind does not auto-retry metric failures.",
+          checks
+        };
+      }
+    }
+
+    if (threshold.max !== undefined) {
+      const pass = typeof value === "number" && value <= threshold.max;
+      checks.push({
+        name: `metric:${metricPath}:max`,
+        status: pass ? "pass" : "fail",
+        message: pass
+          ? `${metricPath}=${value} is within maximum ${threshold.max}.`
+          : `${metricPath}=${value ?? "missing"} exceeds maximum ${threshold.max}.`
+      });
+      if (!pass) {
+        return {
+          decision: "blocked",
+          lifecycle_status: "blocked",
+          reason: "metric_above_threshold",
+          next_action: "Review the quality gate manually; RanchMind does not auto-retry metric failures.",
+          checks
+        };
+      }
+    }
+  }
+
+  return {
+    decision: "pass",
+    lifecycle_status: "completed",
+    reason: "accepted",
+    next_action: "No retry required; the run met the harness contract.",
+    checks
+  };
+}
+
+function finalizeRetryExhausted(finalEvaluation, maxAttempts) {
+  return {
+    ...finalEvaluation,
+    decision: "failed",
+    lifecycle_status: "failed",
+    reason: `${finalEvaluation.reason}_exhausted`,
+    next_action: `Automatic retries exhausted after ${maxAttempts} attempts. Operator review required.`
+  };
+}
+
+function buildLegacyReceipt(config, paths, contract, runState, finalAttempt, finalEvaluation) {
+  const schedulerConfig = getSchedulerConfig(config);
+  const legacyReceiptPath = path.join(paths.receiptsRoot, `${runState.run_id}.json`);
+
+  return {
+    generated_at: nowIso(),
+    requested_date: contract.request.requested_date,
+    invocation_source: contract.request.invocation_source,
+    receipt_path: legacyReceiptPath,
+    authoritative_status_json: finalAttempt.authoritative_status_json,
+    harness: {
+      run_id: runState.run_id,
+      run_dir: paths.runDir,
+      contract_path: paths.contractPath,
+      run_state_path: paths.runStatePath,
+      evaluation_path: paths.evaluationPath,
+      lifecycle_status: finalEvaluation.lifecycle_status,
+      final_decision: finalEvaluation.decision,
+      final_reason: finalEvaluation.reason,
+      attempts: runState.attempts.length,
+      max_attempts: contract.retry_policy.max_attempts,
+      retry_delay_seconds: contract.retry_policy.retry_delay_seconds,
+      next_action: finalEvaluation.next_action
+    },
     planes: {
       human: {
-        latest_json: latestReceiptPath,
-        latest_markdown: latestMarkdownPath,
-        history_jsonl: historyPath
+        latest_json: paths.latestReceiptPath,
+        latest_markdown: paths.latestMarkdownPath,
+        latest_run_json: paths.latestRunPath,
+        history_jsonl: paths.historyPath
       },
       horse: schedulerConfig
         ? {
@@ -499,22 +876,152 @@ function runTraining() {
           },
       lobster: {
         platform,
-        command,
-        args,
-        working_directory: workingDirectory,
-        exit_code: result.status ?? 1
+        command: finalAttempt.command,
+        args: finalAttempt.args,
+        working_directory: finalAttempt.working_directory,
+        exit_code: finalAttempt.exit_code
       }
     },
-    outcome
+    outcome: finalAttempt.outcome ?? {
+      status: "error",
+      reason: finalEvaluation.reason,
+      message: finalAttempt.process_error ?? finalAttempt.parse_error ?? "Execution failed before a valid outcome was produced."
+    }
   };
+}
 
-  writeJsonFile(receiptPath, receipt);
-  writeJsonFile(latestReceiptPath, receipt);
-  fs.writeFileSync(latestMarkdownPath, buildMarkdownSummary(receipt), "utf8");
-  appendJsonLine(historyPath, receipt);
+function runTrainingHarness() {
+  const config = loadConfig();
+  const harnessConfig = getHarnessConfig(config);
+  const dateText = parseFlag("--date") ?? new Date().toISOString().slice(0, 10);
+  const invocationSource = parseFlag("--source") ?? "ranchmind.manual";
+  const forceRequested = process.argv.includes("--force");
+  const runId = makeRunId();
+  const paths = buildRunArtifacts(runId);
 
-  process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
-  process.exit(result.status ?? 1);
+  ensureDirectory(paths.attemptsDir);
+  ensureDirectory(paths.receiptsRoot);
+  ensureDirectory(paths.memoryRoot);
+  trimOldRunDirectories(paths.runsRoot, harnessConfig.runsRetainDays);
+
+  const initialInvocation = buildTrainingInvocation(config, dateText, invocationSource, forceRequested);
+  const contract = createRunContract(config, harnessConfig, dateText, invocationSource, forceRequested, initialInvocation);
+  writeJsonFile(paths.contractPath, contract);
+
+  let runState = writeRunState(paths, null, {
+    run_id: runId,
+    lane: "training",
+    status: "running",
+    phase: "planning",
+    started_at: nowIso(),
+    contract_path: paths.contractPath,
+    attempts: [],
+    next_action: "Execute attempt 1."
+  });
+
+  const evaluationHistory = [];
+  let finalAttempt = null;
+  let finalEvaluation = null;
+
+  for (let attemptNumber = 1; attemptNumber <= harnessConfig.maxAttempts; attemptNumber += 1) {
+    const forceRun = forceRequested || attemptNumber > 1;
+    runState = writeRunState(paths, runState, {
+      phase: "executing",
+      next_action: `Run training attempt ${attemptNumber}.`
+    });
+
+    const attemptRecord = executeTrainingAttempt(config, { dateText, invocationSource }, attemptNumber, forceRun);
+    attemptRecord.attempt_path = path.join(paths.attemptsDir, `attempt-${String(attemptNumber).padStart(2, "0")}.json`);
+    writeJsonFile(attemptRecord.attempt_path, attemptRecord);
+
+    runState = writeRunState(paths, runState, {
+      phase: "evaluating",
+      attempts: [
+        ...runState.attempts,
+        {
+          attempt: attemptNumber,
+          attempt_path: attemptRecord.attempt_path,
+          force: forceRun,
+          exit_code: attemptRecord.exit_code,
+          finished_at: attemptRecord.finished_at
+        }
+      ],
+      next_action: `Evaluate attempt ${attemptNumber}.`
+    });
+
+    let evaluation = evaluateAttempt(harnessConfig, attemptRecord);
+    evaluation = {
+      ...evaluation,
+      attempt: attemptNumber,
+      evaluated_at: nowIso()
+    };
+    evaluationHistory.push(evaluation);
+    finalAttempt = attemptRecord;
+    finalEvaluation = evaluation;
+
+    if (evaluation.decision === "pass") {
+      break;
+    }
+
+    if (evaluation.decision === "retry" && attemptNumber < harnessConfig.maxAttempts) {
+      runState = writeRunState(paths, runState, {
+        status: "running",
+        phase: "waiting_to_retry",
+        next_action: `Retry after ${harnessConfig.retryDelaySeconds} seconds because ${evaluation.reason}.`
+      });
+      sleepMilliseconds(harnessConfig.retryDelaySeconds * 1000);
+      continue;
+    }
+
+    if (evaluation.decision === "retry") {
+      finalEvaluation = finalizeRetryExhausted(evaluation, harnessConfig.maxAttempts);
+    }
+    break;
+  }
+
+  const lifecycleStatus = finalEvaluation.lifecycle_status;
+  runState = writeRunState(paths, runState, {
+    status: lifecycleStatus,
+    phase: "completed",
+    completed_at: nowIso(),
+    next_action: finalEvaluation.next_action,
+    final_decision: finalEvaluation.decision,
+    final_reason: finalEvaluation.reason
+  });
+
+  const evaluationPayload = {
+    run_id: runId,
+    evaluated_at: nowIso(),
+    final_decision: finalEvaluation.decision,
+    lifecycle_status: finalEvaluation.lifecycle_status,
+    final_reason: finalEvaluation.reason,
+    next_action: finalEvaluation.next_action,
+    attempts: evaluationHistory
+  };
+  writeJsonFile(paths.evaluationPath, evaluationPayload);
+
+  const legacyReceipt = buildLegacyReceipt(config, paths, contract, runState, finalAttempt, finalEvaluation);
+  writeJsonFile(paths.finalReceiptPath, legacyReceipt);
+  writeJsonFile(legacyReceipt.receipt_path, legacyReceipt);
+  writeJsonFile(paths.latestReceiptPath, legacyReceipt);
+  writeJsonFile(paths.latestRunPath, {
+    run_id: runId,
+    run_dir: paths.runDir,
+    run_state_path: paths.runStatePath,
+    evaluation_path: paths.evaluationPath,
+    final_receipt_path: paths.finalReceiptPath,
+    lifecycle_status: finalEvaluation.lifecycle_status,
+    final_decision: finalEvaluation.decision,
+    updated_at: nowIso()
+  });
+  fs.writeFileSync(paths.latestMarkdownPath, buildMarkdownSummary(legacyReceipt), "utf8");
+  appendJsonLine(paths.historyPath, legacyReceipt);
+
+  process.stdout.write(`${JSON.stringify(legacyReceipt, null, 2)}\n`);
+  if (finalEvaluation.decision === "pass") {
+    return 0;
+  }
+  return 1;
 }
 
 function registerWindowsTask(config, taskTime, disableLegacy) {
@@ -524,7 +1031,7 @@ function registerWindowsTask(config, taskTime, disableLegacy) {
   const taskName = schedulerConfig?.taskName ?? "RanchMindNonTradingFactorTrainingDaily";
   const fullName = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
   const xmlPath = path.join(rootDir, "state", "tmp", "ranchmind-scheduled-task.xml");
-  fs.mkdirSync(path.dirname(xmlPath), { recursive: true });
+  ensureDirectory(path.dirname(xmlPath));
   fs.writeFileSync(xmlPath, `\uFEFF${buildWindowsTaskXml(taskPath, taskName, effectiveTaskTime)}`, "utf16le");
 
   const createResult = runCommand("schtasks.exe", ["/Create", "/TN", fullName, "/XML", xmlPath, "/F"]);
@@ -549,6 +1056,11 @@ function registerWindowsTask(config, taskTime, disableLegacy) {
     task_name: taskName,
     task_time: effectiveTaskTime,
     principal_logon_type: "S4U",
+    entrypoint: {
+      command: process.execPath,
+      script: path.join(rootDir, "scripts", "ranchmind.mjs"),
+      args: ["run-training", "--source", "scheduled_task"]
+    },
     legacy_task_disabled: legacyTaskDisabled,
     query
   }, null, 2)}\n`);
@@ -566,7 +1078,7 @@ function registerCronScheduler(config, taskTime) {
   const taskName = schedulerConfig?.taskName ?? "RanchMindNonTradingFactorTrainingDaily";
   const logRoot = path.join(rootDir, "state", "logs");
   const logPath = path.join(logRoot, "ranchmind-scheduler.log");
-  fs.mkdirSync(logRoot, { recursive: true });
+  ensureDirectory(logRoot);
 
   const { line, marker } = buildSchedulerLine(taskName, logPath);
   const cronEntry = `${minute} ${hour} * * * ${line} ${marker}`;
@@ -601,13 +1113,12 @@ function registerTraining() {
 
   if (schedulerConfig.kind === "windows-task") {
     registerWindowsTask(config, taskTime, disableLegacy);
-    process.exit(0);
-    return;
+    return 0;
   }
 
   if (schedulerConfig.kind === "cron") {
     registerCronScheduler(config, taskTime);
-    process.exit(0);
+    return 0;
   }
 
   throw new Error(`Unsupported scheduler kind "${schedulerConfig.kind}".`);
@@ -617,6 +1128,8 @@ function status() {
   const config = loadConfig();
   const summary = summarizeLatestReceipt();
   const latestMarkdownPath = path.join(rootDir, "state", "memory", "training-latest.md");
+  const latestRunPath = path.join(rootDir, "state", "memory", "training-latest-run.json");
+  const latestRun = fs.existsSync(latestRunPath) ? readJson(latestRunPath) : null;
   const hermesConfig = getHermesConfig(config);
   const hermesLogPath = hermesConfig?.gatewayLog ? resolvePathLike(hermesConfig.gatewayLog, getContext()) : "";
   let hermesLogTail = [];
@@ -639,7 +1152,9 @@ function status() {
     platform,
     latest_receipt_path: summary.latestReceiptPath,
     latest_markdown_path: latestMarkdownPath,
-    latest_receipt: summary.latestReceipt,
+    latest_run_path: latestRunPath,
+    latest_receipt: summary.latestReceiptSummary ?? null,
+    latest_harness_run: latestRun,
     scheduler: schedulerStatus,
     hermes: {
       task_name: hermesConfig?.taskName ?? "",
@@ -647,6 +1162,7 @@ function status() {
       gateway_log_tail: hermesLogTail
     }
   }, null, 2)}\n`);
+  return 0;
 }
 
 function help() {
@@ -661,30 +1177,27 @@ function main() {
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     help();
-    process.exit(0);
+    return 0;
   }
 
   if (command === "run-training") {
-    runTraining();
-    return;
+    return runTrainingHarness();
   }
 
   if (command === "register-training") {
-    registerTraining();
-    return;
+    return registerTraining();
   }
 
   if (command === "status") {
-    status();
-    process.exit(0);
+    return status();
   }
 
   console.error(`Unknown RanchMind command: ${command}`);
-  process.exit(1);
+  return 1;
 }
 
 try {
-  main();
+  process.exit(main());
 }
 catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
