@@ -1,216 +1,139 @@
 # RanchMind
 
-**Lobster + Horse + Human** in one closed-loop agent runtime.
+> **Lobster + Horse + Human.**  
+> One writes code, one moves work, one remembers why it matters.
 
-RanchMind is a clean-room open-source project concept that combines three proven strengths into a single product:
+RanchMind is a **closed-loop agent runtime** designed to integrate execution, scheduling, and memory into a unified control plane.
 
-- **Lobster**: CLI execution, coding backends, workspace action, tool-heavy work
-- **Horse**: scheduling, messaging, dispatch, background autonomy
-- **Human**: memory, control plane, personal context, UI and review
+---
 
-The goal is not to wrap three existing projects with a thin shell. The goal is to create a **closed loop**:
+## 🎨 Visual Concept
 
-1. the **Horse** schedules or receives work
-2. the **Lobster** executes it in a real workspace
-3. the **Human** stores outcomes as durable memory and operator-facing context
-4. the next task uses that memory to make better decisions
+Imagine a **Retro-futurist Operations Barn** at night:
+- 🦞 **The Lobster (Red):** The execution specialist, hunched over terminal screens, writing code and capturing receipts.
+- 🐎 **The Horse (White):** The tireless dispatcher, managing a wall of clocks, message routes, and task queues.
+- 👤 **The Human (Operator):** The calm center, standing before a glowing memory graph and dashboard.
+- ⚡ **The Loop:** Threads of light connect all three into a continuous, learning circuit.
 
-## Source strengths distilled
+---
 
-| Inspiration | Strength we keep | RanchMind plane |
-| --- | --- | --- |
-| OpenClaw-style systems | CLI backend abstraction, workspace execution, tool-heavy coding, local model adapters | Lobster |
-| Hermes-style systems | channel gateway, cron automation, background dispatch, task fan-out | Horse |
-| OpenHuman-style systems | personal memory, local-first context, UI-first control plane, human-centered product shape | Human |
+## 🏗️ Architecture: The Three-Plane Model
 
-## Why this exists
+RanchMind treats Execution, Scheduling, and Memory as first-class, interconnected planes rather than disconnected tools.
 
-Today the ecosystem has strong single-purpose tools:
+```mermaid
+graph TD
+    subgraph HorsePlane [🐎 Horse Plane: Dispatcher]
+        H1[Cron & Scheduling]
+        H2[Messaging & Routes]
+    end
 
-- execution-first tools
-- messaging/scheduler-first tools
-- memory/UI-first tools
+    subgraph LobsterPlane [🦞 Lobster Plane: Executor]
+        L1[CLI & Shell Actions]
+        L2[Tool-Heavy Coding]
+    end
 
-What is still missing is a repo that treats those three strengths as first-class product planes under one architecture.
+    subgraph HumanPlane [👤 Human Plane: Memory & Control]
+        HU1[Durable Memory Ledger]
+        HU2[Operator Review UI]
+    end
 
-RanchMind is that architecture.
+    %% The Closed Loop
+    H1 -->|1. Dispatches Task| L1
+    L1 -->|2. Returns Result| HU1
+    HU1 -->|3. Feeds History| HU2
+    HU2 -->|4. Informs Policy| H1
 
-## Product position
-
-RanchMind is a **control-plane product**, not just an agent farm.
-
-- **Execution plane** is pluggable
-- **Scheduler plane** is pluggable
-- **Memory plane** is pluggable
-- **Operator UX** is central
-
-That means RanchMind can use OpenClaw-style execution, Hermes-style messaging/cron, and OpenHuman-style memory/UX ideas without being hard-coupled to any one upstream.
-
-## Why not just use an existing agent farm
-
-RanchMind is aimed at the gap above “multi-agent orchestration only”.
-
-The thesis is:
-
-- scheduling without memory is blind
-- execution without operator UX is hard to trust
-- memory without execution is passive
-
-RanchMind treats those three concerns as one product, not three adjacent tools.
-
-## Core planes
-
-### 1. Human Plane
-
-The Human Plane is the operator-facing layer.
-
-- personal memory
-- workspace summaries
-- decision review
-- safety policy
-- approval surfaces
-- local-first knowledge graph
-
-### 2. Horse Plane
-
-The Horse Plane is the dispatch layer.
-
-- cron jobs
-- inbox-triggered tasks
-- Feishu/Telegram/Slack style channel delivery
-- retries, throttling, escalation
-- agent handoff
-
-### 3. Lobster Plane
-
-The Lobster Plane is the execution layer.
-
-- CLI model adapters
-- coding workspaces
-- shell/tool actions
-- backend routing
-- result capture
-
-## What makes RanchMind different
-
-RanchMind is not just “another OpenClaw wrapper” and not just “another cron bot”.
-
-Its differentiator is the **closed execution-memory loop**:
-
-- jobs do not disappear after completion
-- outputs become memory
-- memory affects later planning
-- operator context survives across tools and channels
-
-## Inspiration, not bundled code
-
-RanchMind is **inspired by** the strengths of projects like OpenClaw, Hermes, and OpenHuman.
-
-This scaffold does **not** copy their code or claim affiliation. It is intended as a fresh open-source repo structure for a new product direction.
-
-## Repo layout
-
-```text
-ranchmind/
-  apps/
-    human-plane/
-  packages/
-    horse-plane/
-    lobster-plane/
-    memory-plane/
-  docs/
-    architecture.md
-    promo.md
-  scripts/
-    ranchmind.mjs
-  prompts/
-    gemini-animation.txt
-  ranchmind.config.json
-  LICENSE
-  package.json
-  pnpm-workspace.yaml
+    style HorsePlane fill:#fff,stroke:#333,stroke-width:2px
+    style LobsterPlane fill:#ffe3e3,stroke:#f66,stroke-width:2px
+    style HumanPlane fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
 ```
 
-## Local MVP on this machine
+---
 
-This repo now includes a working local MVP for the **non-trading-day factor training** lane.
+## 🧠 Problems Solved
 
-- **Lobster** runs a platform adapter command that must emit JSON
-- **Horse** uses a platform scheduler adapter
-- **Human** writes durable receipts and memory summaries into `state/memory/`
+RanchMind addresses the "missing link" in current AI agent architectures:
 
-On this Windows machine, the default adapters are already wired to the validated KD workflow and Windows Scheduled Task path.
+1.  **Blind Scheduling (The "Memoryless" Problem):**
+    *   *Problem:* Standard cron jobs run tasks in isolation, unaware of previous failures or results.
+    *   *Solution:* The **Horse Plane** uses **Human Plane** memory to adjust scheduling logic (e.g., "Don't run task B if task A failed and memory says the environment is unstable").
+
+2.  **Unchecked Autonomy (The "Black Box" Problem):**
+    *   *Problem:* Coding agents (like Lobster) can be hard to trust when running background tasks.
+    *   *Solution:* The **Human Plane** acts as a central operator-facing control surface for review and approval, ensuring safety policies are enforced.
+
+3.  **Passive Data Silos (The "Forgotten Context" Problem):**
+    *   *Problem:* Most logs are passive artifacts that disappear after execution.
+    *   *Solution:* Every output from the **Lobster Plane** is captured as a "Durable Receipt" in the memory ledger, becoming active context for future tasks.
+
+---
+
+## 🚀 Why RanchMind?
+
+Instead of choosing between an agent farm, a cron bot, or a memory store, RanchMind turns them into a single product.
+
+- **Execution is pluggable:** Use OpenClaw-style CLI power.
+- **Scheduling is pluggable:** Use Hermes-style messaging and dispatch.
+- **Memory is pluggable:** Use OpenHuman-style local-first context.
+
+---
+
+## 🛠️ Local MVP: Non-Trading Day Factor Training
+
+This repository includes a working MVP for the **Windows KD training workflow**.
 
 ### Commands
 
 ```bash
+# Check status of the system
 node ./scripts/ranchmind.mjs status
+
+# Run a manual training task
 node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
+
+# Register the task in Windows Task Scheduler
 node ./scripts/ranchmind.mjs register-training --disable-legacy
 ```
 
-### Cross-platform adapter model
+### Platform Adapters
 
-RanchMind now uses a **Node control layer** with platform adapters:
+| Platform | Training Adapter (Lobster) | Scheduler Adapter (Horse) |
+| --- | --- | --- |
+| **Windows** | PowerShell KD script | Windows Scheduled Task |
+| **macOS** | CLI (Configurable) | cron |
+| **Linux** | CLI (Configurable) | cron |
 
-| Platform | Training adapter | Scheduler adapter | Current default |
-| --- | --- | --- | --- |
-| Windows | PowerShell KD training script | Windows Scheduled Task | Fully wired and validated on this machine |
-| macOS | Configurable command returning JSON | cron | Adapter path implemented, command must be configured |
-| Linux | Configurable command returning JSON | cron | Adapter path implemented, command must be configured |
+State is stored locally under `state/memory/` and `state/receipts/`.
 
-The platform-specific adapter config lives in `ranchmind.config.json`.
+---
 
-### Training adapter contract
-
-The configured command must emit a single JSON payload with the same shape that the current KD script returns, for example:
-
-```json
-{
-  "status": "ok",
-  "target_end_date": "2026-05-15",
-  "summary": {
-    "best_config": "broad_recovery",
-    "best_qimen_mode": "qimen_m1_positive",
-    "objective_score": 1.23
-  }
-}
-```
-
-RanchMind records that payload into its own receipt and memory ledger regardless of platform.
-
-### Scheduler notes
-
-- **Windows** keeps the validated Scheduled Task flow, including the legacy KD task disable path.
-- **macOS/Linux** currently register a user-level **cron** entry.
-- cron does **not** replay a missed run after sleep or shutdown; if you need catch-up semantics, swap the scheduler adapter for `launchd`, `systemd`, or `anacron`.
-
-### Durable state
-
-RanchMind keeps its own state under:
+## 📂 Repository Structure
 
 ```text
-state/
-  memory/
-    training-history.jsonl
-    training-latest.json
-    training-latest.md
-  receipts/
-    training/
+ranchmind/
+  apps/
+    human-plane/     # Operator UI & Control Plane
+  packages/
+    horse-plane/     # Scheduling & Dispatch logic
+    lobster-plane/   # Execution & CLI adapters
+    memory-plane/    # Durable storage & context
+  scripts/
+    ranchmind.mjs    # Unified CLI entry point
+  ranchmind.config.json # Adapter configurations
 ```
 
-The underlying KD workflow remains the authoritative execution source on Windows. RanchMind does not replace it; RanchMind wraps it, records it, and schedules it under its own control plane.
+---
 
-## Initial roadmap
+## 🎯 Initial Roadmap
 
-- define clean backend contracts for scheduling, execution, and memory
-- add a unified run ledger across all three planes
-- add operator review UI for scheduled task results
-- add memory-fed scheduling rules
-- add pluggable channel adapters and local CLI backend adapters
+- [ ] Unified run ledger across all three planes.
+- [ ] Operator review UI for scheduled task results.
+- [ ] Memory-fed dynamic scheduling rules.
+- [ ] Pluggable channel delivery (Slack/Feishu/Telegram).
 
-## Launch line
+---
 
-> **Lobster + Horse + Human.**
-> One writes code, one moves work, one remembers why it matters.
+## 📜 License
+MIT
 
