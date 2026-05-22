@@ -136,7 +136,9 @@
         ],
         "dryRunArgs": ["-NotifyDryRun"],
         "workingDirectory": "{{root}}",
-        "outputJsonPath": "{{root}}\\state\\tmp\\qmt-run-output.json"
+        "outputJsonPath": "{{root}}\\state\\tmp\\qmt-run-output.json",
+        "processName": "XtItClient",
+        "executable": "C:\\Users\\Cocoon-Break\\software\\国金QMT交易端模拟\\bin.x64\\XtItClient.exe"
       }
     },
     "scheduler": {
@@ -146,9 +148,11 @@
       "taskTime": "14:30"
     },
     "harness": {
-      "maxAttempts": 2,
+      "maxAttempts": 3,
       "retryDelaySeconds": 15,
       "timeoutSeconds": 900,
+      "startupWaitSeconds": 240,
+      "timeoutBackoffMultiplier": 20,
       "evaluator": {
         "acceptStatuses": ["ok", "skipped"],
         "requiredArtifactsOnOk": [],
@@ -174,4 +178,6 @@
     "logTailLines": 200
   }
 }
+
+
 

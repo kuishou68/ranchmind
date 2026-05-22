@@ -305,9 +305,11 @@ function getQmtHarnessConfig(config) {
   const h = config.qmt?.harness ?? {};
   const shared = getHarnessConfig(config);
   return {
-    maxAttempts: h.maxAttempts ?? 2,
+    maxAttempts: h.maxAttempts ?? 3,
     retryDelaySeconds: h.retryDelaySeconds ?? 15,
     timeoutSeconds: h.timeoutSeconds ?? 900,
+    startupWaitSeconds: h.startupWaitSeconds ?? 240,
+    timeoutBackoffMultiplier: h.timeoutBackoffMultiplier ?? 20,
     runsRetainDays: h.runsRetainDays ?? shared.runsRetainDays,
     evaluator: {
       acceptStatuses: h.evaluator?.acceptStatuses ?? ["ok", "skipped"],
@@ -316,6 +318,133 @@ function getQmtHarnessConfig(config) {
       metricThresholds: h.evaluator?.metricThresholds ?? {}
     }
   };
+}
+
+// ── Hermes / Feishu notify helpers ──────────────────────────────────────────
+
+const KNOWN_FEISHU_FALLBACK_TARGET = "oc_223fa1db7fac3cc9ae9a0f2ad3af63f8";
+
+function resolveHermesHomePath() {
+  const candidates = [
+    path.join(os.homedir(), ".hermes-windows", "runtime"),
+    path.join(os.homedir(), ".hermes")
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "config.yaml"))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolveHermesExePath() {
+  const candidates = [
+    path.join(os.homedir(), "tmp", "hermes-agent-win", ".venv", "Scripts", "hermes.exe"),
+    path.join(os.homedir(), ".local", "bin", "hermes.exe")
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  const which = runCommand("where", ["hermes"], { timeoutMs: 5000 });
+  if (which.status === 0 && which.stdout?.trim()) {
+    return which.stdout.trim().split(/\r?\n/)[0].trim();
+  }
+  return null;
+}
+
+function resolveFeishuDmTarget() {
+  const hermesHome = resolveHermesHomePath();
+  if (hermesHome) {
+    const chanDirPath = path.join(hermesHome, "channel_directory.json");
+    const chanDir = safeReadJson(chanDirPath);
+    const feishuEntries = chanDir?.platforms?.feishu ?? [];
+    const dmEntry = feishuEntries.find((e) => e.type === "dm");
+    if (dmEntry?.id) return String(dmEntry.id);
+    if (feishuEntries.length > 0) {
+      const first = feishuEntries[0];
+      const id = String(first.id ?? first.name ?? "");
+      if (id) return id;
+    }
+  }
+  return KNOWN_FEISHU_FALLBACK_TARGET;
+}
+
+function sendHermesFeishuNotify(message) {
+  const hermesExe = resolveHermesExePath();
+  if (!hermesExe) {
+    return { ok: false, reason: "hermes_not_found", raw: "" };
+  }
+  const hermesHome = resolveHermesHomePath();
+  const target = resolveFeishuDmTarget();
+  const env = { ...process.env };
+  if (hermesHome) {
+    env.HERMES_HOME = hermesHome;
+  }
+  const result = runCommand(hermesExe, ["send", "--to", `feishu:${target}`, message], { timeoutMs: 30000, env });
+  return {
+    ok: result.status === 0,
+    target,
+    raw: ((result.stdout ?? "") + (result.stderr ?? "")).trim(),
+    exit_code: result.status ?? 1
+  };
+}
+
+// ── QMT process lifecycle helpers ────────────────────────────────────────────
+
+function checkQmtProcess(config) {
+  const adapter = config.qmt?.platforms?.[platform] ?? {};
+  const processName = adapter.processName ?? "XtItClient";
+  const script = `$p = Get-Process -Name '${processName}' -ErrorAction SilentlyContinue; if ($p) { "running:" + $p[0].Id } else { "stopped" }`;
+  const result = runCommand("powershell.exe", ["-NoProfile", "-Command", script], { timeoutMs: 10000 });
+  const output = (result.stdout ?? "").trim();
+  if (output.startsWith("running:")) {
+    const pid = Number.parseInt(output.split(":")[1], 10) || 0;
+    return { running: true, pid, name: processName };
+  }
+  return { running: false, pid: 0, name: processName };
+}
+
+function startQmtProcess(config) {
+  const adapter = config.qmt?.platforms?.[platform] ?? {};
+  const exePath = adapter.executable ?? "";
+  if (!exePath || !fs.existsSync(exePath)) {
+    return { ok: false, reason: "executable_not_found", path: exePath };
+  }
+  const script = `Start-Process -FilePath '${exePath.replace(/'/g, "''")}' -WindowStyle Normal; "started"`;
+  const result = runCommand("powershell.exe", ["-NoProfile", "-Command", script], { timeoutMs: 15000 });
+  const ok = result.status === 0 && (result.stdout ?? "").includes("started");
+  return { ok, path: exePath, raw: (result.stdout ?? "").trim() };
+}
+
+function waitForQmtReady(config, maxSeconds) {
+  const intervalMs = 10000;
+  const maxMs = maxSeconds * 1000;
+  const startMs = Date.now();
+  while (Date.now() - startMs < maxMs) {
+    const check = checkQmtProcess(config);
+    if (check.running) {
+      return { ready: true, elapsed_seconds: Math.round((Date.now() - startMs) / 1000), pid: check.pid };
+    }
+    sleepMilliseconds(intervalMs);
+  }
+  return { ready: false, elapsed_seconds: maxSeconds };
+}
+
+// ── Trading-day guard (lightweight JS mirror of KdLocal.Common.ps1) ──────────
+
+const KNOWN_CN_NON_TRADING_DATES = new Set([
+  "2026-01-01","2026-01-26","2026-01-27","2026-01-28","2026-01-29","2026-01-30","2026-02-02","2026-02-04",
+  "2026-04-03","2026-04-04","2026-04-05","2026-04-06","2026-05-01","2026-05-04","2026-05-05",
+  "2026-06-19","2026-06-22","2026-10-01","2026-10-02","2026-10-05","2026-10-06","2026-10-07","2026-10-08","2026-10-09"
+]);
+
+function isChinaAshareTradingDay(dateText) {
+  const d = new Date(dateText + "T12:00:00+08:00");
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return false;
+  return !KNOWN_CN_NON_TRADING_DATES.has(dateText);
 }
 
 function getQmtSchedulerConfig(config) {
@@ -1720,6 +1849,7 @@ function executeQmtAttempt(config, runContext, attemptNumber) {
 
   if (result.error) {
     const isTimeout = result.error.code === "ETIMEDOUT";
+    record.is_timeout = isTimeout;
     record.process_error = isTimeout
       ? `QMT adapter timed out after ${harnessConfig.timeoutSeconds}s. QMT may not be running or the export pipeline is stalled.`
       : result.error.message;
@@ -2126,9 +2256,85 @@ function runQmtHarness() {
     started_at: nowIso(),
     contract_path: paths.contractPath,
     attempts: [],
+    next_action: "Pre-flight: check QMT process."
+  });
+
+  // ── Pre-flight: QMT process check and auto-start ─────────────────────────
+  const preflightLog = { checked_at: nowIso() };
+
+  if (!dryRun && isChinaAshareTradingDay(dateText)) {
+    const processCheck = checkQmtProcess(config);
+    preflightLog.process_check = processCheck;
+
+    if (!processCheck.running) {
+      runState = writeRunState(paths, runState, {
+        phase: "pre_flight",
+        next_action: "QMT process not found — attempting auto-start."
+      });
+
+      const startResult = startQmtProcess(config);
+      preflightLog.start_attempt = startResult;
+
+      if (startResult.ok) {
+        runState = writeRunState(paths, runState, {
+          phase: "pre_flight",
+          next_action: `QMT launched. Waiting up to ${harnessConfig.startupWaitSeconds}s for process to become ready.`
+        });
+        const waitResult = waitForQmtReady(config, harnessConfig.startupWaitSeconds);
+        preflightLog.startup_wait = waitResult;
+
+        if (!waitResult.ready) {
+          const failMsg = `[RanchMind] QMT 自启动失败 — 进程在 ${harnessConfig.startupWaitSeconds}s 内未就绪。请手动启动 QMT 后重试。run_id: ${runId}`;
+          const notify = sendHermesFeishuNotify(failMsg);
+          preflightLog.feishu_notify = notify;
+
+          runState = writeRunState(paths, runState, {
+            status: "blocked",
+            phase: "pre_flight_failed",
+            completed_at: nowIso(),
+            preflight_log: preflightLog,
+            next_action: "QMT process did not start within the startup window. Manual intervention needed to launch QMT.",
+            final_decision: "blocked",
+            final_reason: "qmt_startup_timeout"
+          });
+          const blockedReceipt = buildQmtReceipt(config, paths, contract, runState, null, {
+            decision: "blocked",
+            lifecycle_status: "blocked",
+            reason: "qmt_startup_timeout",
+            next_action: "QMT process did not start within the startup window.",
+            checks: []
+          });
+          writeJsonFile(paths.finalReceiptPath, blockedReceipt);
+          writeJsonFile(blockedReceipt.receipt_path, blockedReceipt);
+          writeJsonFile(paths.latestReceiptPath, blockedReceipt);
+          writeJsonFile(paths.latestRunPath, {
+            run_id: runId, run_dir: paths.runDir, lifecycle_status: "blocked",
+            final_decision: "blocked", updated_at: nowIso()
+          });
+          appendJsonLine(paths.historyPath, blockedReceipt);
+          process.stdout.write(`${JSON.stringify(blockedReceipt, null, 2)}\n`);
+          return 1;
+        }
+      }
+      else {
+        // Executable not found — continue anyway; PS script will surface the real error
+        preflightLog.start_skipped = true;
+        preflightLog.start_reason = startResult.reason ?? "start_failed";
+      }
+    }
+  }
+  else {
+    preflightLog.skipped = true;
+    preflightLog.reason = dryRun ? "dry_run" : "non_trading_day";
+  }
+
+  runState = writeRunState(paths, runState, {
+    phase: "executing",
+    preflight_log: preflightLog,
     next_action: "Execute QMT notify attempt 1."
   });
 
+  // ── Attempt loop ──────────────────────────────────────────────────────────
   const evaluationHistory = [];
   let finalAttempt = null;
   let finalEvaluation = null;
@@ -2152,6 +2358,7 @@ function runQmtHarness() {
           attempt_path: attemptRecord.attempt_path,
           dry_run: dryRun,
           exit_code: attemptRecord.exit_code,
+          is_timeout: attemptRecord.is_timeout ?? false,
           finished_at: attemptRecord.finished_at
         }
       ],
@@ -2159,11 +2366,7 @@ function runQmtHarness() {
     });
 
     let evaluation = evaluateAttempt(harnessConfig, attemptRecord);
-    evaluation = {
-      ...evaluation,
-      attempt: attemptNumber,
-      evaluated_at: nowIso()
-    };
+    evaluation = { ...evaluation, attempt: attemptNumber, evaluated_at: nowIso() };
     evaluationHistory.push(evaluation);
     finalAttempt = attemptRecord;
     finalEvaluation = evaluation;
@@ -2173,12 +2376,17 @@ function runQmtHarness() {
     }
 
     if (evaluation.decision === "retry" && attemptNumber < harnessConfig.maxAttempts) {
+      // Use long backoff only for genuine timeouts so non-timeout errors recover quickly
+      const isTimeout = attemptRecord.is_timeout ?? false;
+      const backoffSeconds = isTimeout
+        ? harnessConfig.retryDelaySeconds * harnessConfig.timeoutBackoffMultiplier
+        : harnessConfig.retryDelaySeconds;
       runState = writeRunState(paths, runState, {
         status: "running",
         phase: "waiting_to_retry",
-        next_action: `Retry after ${harnessConfig.retryDelaySeconds} seconds because ${evaluation.reason}.`
+        next_action: `Retry after ${backoffSeconds}s because ${evaluation.reason}${isTimeout ? " (timeout backoff)" : ""}.`
       });
-      sleepMilliseconds(harnessConfig.retryDelaySeconds * 1000);
+      sleepMilliseconds(backoffSeconds * 1000);
       continue;
     }
 
@@ -2188,14 +2396,30 @@ function runQmtHarness() {
     break;
   }
 
+  // ── Post-run: autonomous Feishu notification on terminal failure ──────────
   const lifecycleStatus = finalEvaluation.lifecycle_status;
+  let postRunNotify = null;
+
+  if (finalEvaluation.decision !== "pass" && !dryRun) {
+    const reason = finalEvaluation.reason ?? "unknown";
+    const failMsg = [
+      `[RanchMind QMT] 运行终止 — ${lifecycleStatus}`,
+      `原因: ${reason}`,
+      `次数: ${evaluationHistory.length}/${harnessConfig.maxAttempts}`,
+      `建议: ${finalEvaluation.next_action ?? "请检查 QMT 是否运行正常。"}`,
+      `run_id: ${runId}`
+    ].join("\n");
+    postRunNotify = sendHermesFeishuNotify(failMsg);
+  }
+
   runState = writeRunState(paths, runState, {
     status: lifecycleStatus,
     phase: "completed",
     completed_at: nowIso(),
     next_action: finalEvaluation.next_action,
     final_decision: finalEvaluation.decision,
-    final_reason: finalEvaluation.reason
+    final_reason: finalEvaluation.reason,
+    post_run_notify: postRunNotify
   });
 
   const evaluationPayload = {
