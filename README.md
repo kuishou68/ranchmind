@@ -96,6 +96,12 @@ This repository includes a working MVP for the **Windows KD training workflow**.
 # Check status of the system
 node ./scripts/ranchmind.mjs status
 
+# Compute the latest memory-fed scheduling policy snapshot
+node ./scripts/ranchmind.mjs evaluate-scheduling
+
+# Run the bounded autonomy/improvement loop
+node ./scripts/ranchmind.mjs run-autonomy-loop
+
 # Run a manual harnessed training task
 node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
 
@@ -192,6 +198,65 @@ This means RanchMind can now tell the difference between:
 - **degraded**: RanchMind found a runtime problem but could not repair it automatically
 - **blocked**: the local source token itself needs re-authentication, so restarting Hermes would just loop
 
+## 🧭 Memory-fed scheduling policy
+
+RanchMind now computes a **report-only scheduling policy** for the training lane so Human-plane memory can influence Horse-plane visibility without blindly hard-blocking execution.
+
+- reads `training-latest-run.json` to detect whether the most recent harness run ended in `failed` or `blocked`
+- scans recent `training-history.jsonl` to find the last successful `outcome.status = ok` run
+- reads `feishu-runtime-latest.json` as an **advisory** signal only
+- treats stale or missing Feishu snapshots as warnings instead of pretending they are healthy
+- writes a durable policy snapshot for operators and future automation
+
+### Scheduling policy state
+
+```text
+state/
+  memory/
+    scheduling-policy-latest.json
+    scheduling-policy-latest.md
+    scheduling-policy-history.jsonl
+```
+
+The current v0 policy is intentionally **observe-only**:
+
+- **allowed**: no recent harness blocker was detected
+- **degraded**: the latest training harness run failed or blocked and should be reviewed
+- **unknown**: RanchMind has not yet seen enough durable run history to judge confidently
+
+Feishu notification health is surfaced as a warning because a broken chat channel should not silently suppress a valid local KD training run.
+
+## ♻️ Autonomy improvement loop
+
+RanchMind now has a bounded **autonomy loop** that turns durable history into a ranked improvement plan instead of trying to self-modify blindly.
+
+- computes a baseline from recent `training-history.jsonl` and `feishu-runtime-history.jsonl`
+- measures how often the lane ran without blocking, and how many successful `ok` training runs exist
+- separates **operational** candidates from **quality** candidates
+- keeps the current mode as `recommend_only` so the system does not weaken its own quality gates
+- writes durable loop artifacts for the next iteration instead of starting from scratch
+
+### Autonomy loop state
+
+```text
+state/
+  memory/
+    autonomy-loop-latest.json
+    autonomy-loop-latest.md
+    autonomy-loop-history.jsonl
+```
+
+Each loop run also writes per-run artifacts under `state/runs/autonomy-loop-<timestamp>/`:
+
+```text
+autonomy-baseline.json
+improvement-plan.json
+evaluation.json
+result.json
+```
+
+The current v0 loop intentionally **does not auto-apply arbitrary code or threshold changes**. It is a harnessed discovery/analysis/evaluation layer that prepares the next safe RanchMind change.
+
 ---
 
 ## 📂 Repository Structure
@@ -214,8 +279,9 @@ ranchmind/
 ## 🎯 Initial Roadmap
 
 - [x] Harness-style run ledger for the training lane.
+- [x] Memory-fed dynamic scheduling rules.
+- [x] Bounded autonomy improvement loop.
 - [ ] Operator review UI for scheduled task results.
-- [ ] Memory-fed dynamic scheduling rules.
 - [ ] Pluggable channel delivery (Slack/Feishu/Telegram).
 
 ---

@@ -132,6 +132,48 @@ RanchMind now treats the Feishu-facing runtime as a supervised subsystem with fo
 
 The key design choice is that RanchMind does **not** try to replace Hermes' launcher loop. It supervises it from above and only nudges it when the current state justifies intervention.
 
+## Memory-fed scheduling rules
+
+RanchMind now has a report-only scheduling policy layer that sits between the Human and Horse planes.
+
+1. **Read memory**
+   - latest training harness run
+   - recent training history
+   - latest Feishu runtime snapshot
+2. **Interpret**
+   - degrade the training lane when the latest harness run is `failed` or `blocked`
+   - keep Feishu health advisory-only because notification outages do not invalidate local KD execution
+   - mark Feishu state as stale if the watchdog snapshot is older than the expected supervision window
+3. **Persist**
+   - write `scheduling-policy-latest.json` / `.md`
+   - append `scheduling-policy-history.jsonl`
+4. **Expose**
+   - `status` includes the latest computed policy so the operator can see whether the next dispatch should be trusted
+
+This is intentionally **not** a hard execution gate yet. The point of v0 is to make memory influence dispatch visibility first, without creating stale-policy races that could suppress valid training runs.
+
+## Bounded autonomy loop
+
+RanchMind now adds a higher-level improvement harness above the training lane and Feishu watchdog.
+
+1. **Mine structured signals**
+   - recent training history
+   - recent Feishu runtime history
+   - latest scheduling policy snapshot
+2. **Baseline**
+   - compute autonomy ratio
+   - count successful, skipped, and blocked/failed runs
+   - summarize quality metrics from successful runs
+3. **Plan**
+   - produce ranked **operational** candidates
+   - produce ranked **quality** candidates
+   - keep risky changes such as metric-threshold edits in operator-review mode
+4. **Evaluate**
+   - write explicit insights about what still blocks unattended QMT autonomy
+   - persist a loop result the next session can inspect before making another change
+
+This loop is intentionally **bounded** and currently runs in `recommend_only` mode. The goal is to create a repeatable discover -> analyze -> validate -> evaluate cycle without pretending the system is already safe to self-edit indefinitely.
+
 ## Cross-platform runtime layer
 
 The current repo now treats the control layer as **portable**, with platform adapters below it.

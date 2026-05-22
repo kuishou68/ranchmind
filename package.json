@@ -11,6 +11,11 @@
     "status": "node ./scripts/ranchmind.mjs status",
     "run:training": "node ./scripts/ranchmind.mjs run-training",
     "register:training": "node ./scripts/ranchmind.mjs register-training --disable-legacy",
+    "run:qmt": "node ./scripts/ranchmind.mjs run-qmt",
+    "run:qmt:dry": "node ./scripts/ranchmind.mjs run-qmt --dry-run",
+    "register:qmt": "node ./scripts/ranchmind.mjs register-qmt",
+    "evaluate:scheduling": "node ./scripts/ranchmind.mjs evaluate-scheduling",
+    "run:autonomy-loop": "node ./scripts/ranchmind.mjs run-autonomy-loop",
     "ensure:feishu": "node ./scripts/ranchmind.mjs ensure-feishu-runtime",
     "register:feishu": "node ./scripts/ranchmind.mjs register-feishu-watchdog"
   }

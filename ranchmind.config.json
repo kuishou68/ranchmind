@@ -1,4 +1,4 @@
-{
+﻿{
   "kd": {
     "repoRoot": "..\\cocoon-trade\\cocoon-trade",
     "trainingScript": "..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-OvernightHoldNonTradingFactorTraining.ps1",
@@ -108,6 +108,55 @@
       "metricThresholds": {}
     }
   },
+  "schedulingPolicy": {
+    "lane": "training",
+    "historyScanLimit": 200,
+    "feishuSnapshotMaxAgeSeconds": 600
+  },
+  "autonomyLoop": {
+    "trainingHistoryScanLimit": 200,
+    "feishuHistoryScanLimit": 200,
+    "qmtHistoryScanLimit": 200,
+    "minSuccessfulRunsForEvaluation": 5
+  },
+  "qmt": {
+    "platforms": {
+      "win32": {
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-KdOpenHumanOvernightNotify.ps1",
+          "-RepoRoot",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade",
+          "-OutputJson",
+          "{{root}}\\state\\tmp\\qmt-run-output.json"
+        ],
+        "dryRunArgs": ["-NotifyDryRun"],
+        "workingDirectory": "{{root}}",
+        "outputJsonPath": "{{root}}\\state\\tmp\\qmt-run-output.json"
+      }
+    },
+    "scheduler": {
+      "kind": "windows-task",
+      "taskPath": "\\RanchMind\\",
+      "taskName": "RanchMindOvernightQmtDaily",
+      "taskTime": "14:30"
+    },
+    "harness": {
+      "maxAttempts": 2,
+      "retryDelaySeconds": 15,
+      "timeoutSeconds": 900,
+      "evaluator": {
+        "acceptStatuses": ["ok", "skipped"],
+        "requiredArtifactsOnOk": [],
+        "requiredOutcomeFieldsOnOk": [],
+        "metricThresholds": {}
+      }
+    }
+  },
   "feishuWatchdog": {
     "failureThreshold": 3,
     "taskPath": "\\RanchMind\\",
@@ -125,3 +174,4 @@
     "logTailLines": 200
   }
 }
+

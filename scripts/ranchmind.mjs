@@ -71,12 +71,17 @@ function ensureDirectory(directoryPath) {
 }
 
 function runCommand(command, args, options = {}) {
-  return spawnSync(command, args, {
+  const spawnOptions = {
     cwd: options.cwd ?? rootDir,
     encoding: "utf8",
     input: options.input,
-    env: options.env ?? process.env
-  });
+    env: options.env ?? process.env,
+    maxBuffer: 16 * 1024 * 1024
+  };
+  if (options.timeoutMs && options.timeoutMs > 0) {
+    spawnOptions.timeout = options.timeoutMs;
+  }
+  return spawnSync(command, args, spawnOptions);
 }
 
 function readJson(filePath) {
@@ -84,9 +89,21 @@ function readJson(filePath) {
   return JSON.parse(raw);
 }
 
-function writeJsonFile(filePath, value) {
+function writeTextFile(filePath, value) {
   ensureDirectory(path.dirname(filePath));
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempPath, value, "utf8");
+  try {
+    fs.renameSync(tempPath, filePath);
+  }
+  catch {
+    fs.rmSync(filePath, { force: true });
+    fs.renameSync(tempPath, filePath);
+  }
+}
+
+function writeJsonFile(filePath, value) {
+  writeTextFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function appendJsonLine(filePath, value) {
@@ -254,6 +271,62 @@ function getFeishuWatchdogConfig(config) {
   };
 }
 
+function getSchedulingPolicyConfig(config) {
+  const policy = config.schedulingPolicy ?? {};
+  const watchdogConfig = getFeishuWatchdogConfig(config);
+  return {
+    lane: policy.lane ?? "training",
+    historyScanLimit: policy.historyScanLimit ?? 200,
+    feishuSnapshotMaxAgeSeconds: policy.feishuSnapshotMaxAgeSeconds
+      ?? Math.max(600, (watchdogConfig.repeatMinutes ?? 5) * 120)
+  };
+}
+
+function getAutonomyLoopConfig(config) {
+  const loop = config.autonomyLoop ?? {};
+  return {
+    trainingHistoryScanLimit: loop.trainingHistoryScanLimit ?? 200,
+    feishuHistoryScanLimit: loop.feishuHistoryScanLimit ?? 200,
+    qmtHistoryScanLimit: loop.qmtHistoryScanLimit ?? 200,
+    minSuccessfulRunsForEvaluation: loop.minSuccessfulRunsForEvaluation ?? 5
+  };
+}
+
+function getQmtAdapter(config) {
+  const platformConfig = config.qmt?.platforms?.[platform];
+  if (platformConfig?.command) {
+    return platformConfig;
+  }
+
+  throw new Error(`No QMT adapter is configured for platform "${platform}".`);
+}
+
+function getQmtHarnessConfig(config) {
+  const h = config.qmt?.harness ?? {};
+  const shared = getHarnessConfig(config);
+  return {
+    maxAttempts: h.maxAttempts ?? 2,
+    retryDelaySeconds: h.retryDelaySeconds ?? 15,
+    timeoutSeconds: h.timeoutSeconds ?? 900,
+    runsRetainDays: h.runsRetainDays ?? shared.runsRetainDays,
+    evaluator: {
+      acceptStatuses: h.evaluator?.acceptStatuses ?? ["ok", "skipped"],
+      requiredArtifactsOnOk: h.evaluator?.requiredArtifactsOnOk ?? [],
+      requiredOutcomeFieldsOnOk: h.evaluator?.requiredOutcomeFieldsOnOk ?? [],
+      metricThresholds: h.evaluator?.metricThresholds ?? {}
+    }
+  };
+}
+
+function getQmtSchedulerConfig(config) {
+  const scheduler = config.qmt?.scheduler;
+  if (!scheduler) {
+    return null;
+  }
+
+  return scheduler;
+}
+
 function safeReadJson(filePath, fallback = null) {
   try {
     if (!filePath || !fs.existsSync(filePath)) {
@@ -268,6 +341,43 @@ function safeReadJson(filePath, fallback = null) {
 
 function compactText(text) {
   return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function getAgeSeconds(timestamp) {
+  if (!timestamp) {
+    return null;
+  }
+
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+
+  return Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+}
+
+function readJsonLines(filePath, limit = 200) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return [];
+  }
+
+  const lines = fs.readFileSync(filePath, "utf8")
+    .replace(/\r/g, "")
+    .split("\n")
+    .filter((line) => line.trim());
+  const sliced = limit > 0 ? lines.slice(-limit) : lines;
+  const entries = [];
+
+  for (const line of sliced) {
+    try {
+      entries.push(JSON.parse(line));
+    }
+    catch {
+      // Ignore malformed history lines so one bad write does not poison scheduling policy evaluation.
+    }
+  }
+
+  return entries;
 }
 
 function fingerprintToken(token) {
@@ -737,6 +847,121 @@ function buildFeishuMarkdown(state) {
   return `${lines.join("\n")}\n`;
 }
 
+function buildSchedulingPolicyMarkdown(policy) {
+  const lines = [
+    "# RanchMind Scheduling Policy",
+    "",
+    `- computed_at: ${policy.computed_at}`,
+    `- lane: ${policy.lane}`,
+    `- mode: ${policy.mode}`,
+    `- verdict: ${policy.verdict}`,
+    `- execution_gate: ${policy.execution_gate}`,
+    `- next_action: ${policy.next_action}`
+  ];
+
+  for (const reason of policy.reasons ?? []) {
+    lines.push(`- reason: ${reason}`);
+  }
+  for (const warning of policy.warnings ?? []) {
+    lines.push(`- warning: ${warning}`);
+  }
+
+  const latestTraining = policy.sources?.latest_training_run;
+  if (latestTraining) {
+    lines.push(`- latest_training_lifecycle: ${latestTraining.lifecycle_status ?? "unknown"}`);
+    lines.push(`- latest_training_decision: ${latestTraining.final_decision ?? "unknown"}`);
+    lines.push(`- latest_training_age_seconds: ${latestTraining.age_seconds ?? ""}`);
+  }
+
+  const lastOkTraining = policy.sources?.last_successful_training;
+  if (lastOkTraining) {
+    lines.push(`- last_successful_training_at: ${lastOkTraining.generated_at ?? ""}`);
+    lines.push(`- last_successful_training_age_seconds: ${lastOkTraining.age_seconds ?? ""}`);
+    lines.push(`- last_successful_training_requested_date: ${lastOkTraining.requested_date ?? ""}`);
+  }
+
+  const feishuSnapshot = policy.sources?.feishu_snapshot;
+  if (feishuSnapshot) {
+    lines.push(`- feishu_snapshot_state: ${feishuSnapshot.lifecycle_status ?? "unknown"}`);
+    lines.push(`- feishu_snapshot_age_seconds: ${feishuSnapshot.age_seconds ?? ""}`);
+    lines.push(`- feishu_snapshot_stale: ${feishuSnapshot.stale ?? false}`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function buildAutonomyLoopMarkdown(loop) {
+  const lines = [
+    "# RanchMind Autonomy Loop",
+    "",
+    `- generated_at: ${loop.generated_at}`,
+    `- mode: ${loop.mode}`,
+    `- next_action: ${loop.next_action}`,
+    `- baseline_autonomy_ratio: ${loop.baseline.training.autonomy_ratio}`,
+    `- baseline_ok_runs: ${loop.baseline.training.ok_run_count}`,
+    `- improvement_candidates: ${loop.plan.summary.total_candidates}`,
+    `- operational_candidates: ${loop.plan.summary.operational_candidates}`,
+    `- quality_candidates: ${loop.plan.summary.quality_candidates}`
+  ];
+
+  for (const insight of loop.evaluation.top_insights ?? []) {
+    lines.push(`- insight: ${insight}`);
+  }
+
+  for (const candidate of loop.plan.operational_candidates ?? []) {
+    lines.push(`- operational_candidate: ${candidate.id} (${candidate.priority})`);
+  }
+  for (const candidate of loop.plan.quality_candidates ?? []) {
+    lines.push(`- quality_candidate: ${candidate.id} (${candidate.priority})`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function buildQmtMarkdownSummary(receipt) {
+  const lines = [
+    "# RanchMind QMT Summary",
+    "",
+    `- harness_status: ${receipt.harness.lifecycle_status}`,
+    `- harness_decision: ${receipt.harness.final_decision}`,
+    `- attempts: ${receipt.harness.attempts}/${receipt.harness.max_attempts}`,
+    `- run_id: ${receipt.harness.run_id}`,
+    `- status: ${receipt.outcome.status}`,
+    `- invocation_source: ${receipt.invocation_source}`,
+    `- requested_date: ${receipt.requested_date}`,
+    `- generated_at: ${receipt.generated_at}`
+  ];
+
+  if (receipt.harness.next_action) {
+    lines.push(`- next_action: ${receipt.harness.next_action}`);
+  }
+
+  if (receipt.outcome.reason) {
+    lines.push(`- reason: ${receipt.outcome.reason}`);
+  }
+
+  if (receipt.outcome.notify?.status) {
+    lines.push(`- notify_status: ${receipt.outcome.notify.status}`);
+  }
+
+  if (receipt.outcome.message) {
+    lines.push("", "## Message", "", String(receipt.outcome.message).split("\n").slice(0, 12).join("\n"));
+  }
+
+  lines.push("", "## Harness", "");
+  lines.push(`- run_dir: ${receipt.harness.run_dir}`);
+  lines.push(`- contract_path: ${receipt.harness.contract_path}`);
+  lines.push(`- evaluation_path: ${receipt.harness.evaluation_path}`);
+  lines.push(`- run_state_path: ${receipt.harness.run_state_path}`);
+
+  if (receipt.authoritative_status_json) {
+    lines.push("", "## Artifacts", "");
+    lines.push(`- output_json: ${receipt.authoritative_status_json}`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 function getCronQuery(taskName, logPath) {
   const { marker } = buildSchedulerLine(taskName, logPath);
 
@@ -818,8 +1043,38 @@ function makeRunId() {
   return `training-${stamp}`;
 }
 
+function makeQmtRunId() {
+  const stamp = nowIso().replace(/[-:]/g, "").replace(/\./g, "").replace("T", "-").replace("Z", "");
+  return `qmt-${stamp}`;
+}
+
 function getMetricValue(outcome, metricPath) {
   return metricPath.split(".").reduce((current, key) => (current && typeof current === "object" ? current[key] : undefined), outcome);
+}
+
+function collectNumericMetric(entries, metricPath) {
+  const values = entries
+    .map((entry) => getMetricValue(entry.outcome ?? {}, metricPath))
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+
+  if (values.length === 0) {
+    return {
+      count: 0,
+      min: null,
+      max: null,
+      average: null,
+      latest: null
+    };
+  }
+
+  const sum = values.reduce((accumulator, value) => accumulator + value, 0);
+  return {
+    count: values.length,
+    min: Math.min(...values),
+    max: Math.max(...values),
+    average: sum / values.length,
+    latest: values[values.length - 1]
+  };
 }
 
 function trimOldRunDirectories(runsRoot, retainDays) {
@@ -856,6 +1111,30 @@ function buildTrainingInvocation(config, dateText, invocationSource, forceRun) {
     args,
     workingDirectory: adapter.workingDirectory ? resolvePathLike(adapter.workingDirectory, context) : rootDir,
     authoritativeStatusJson: adapter.authoritativeStatusPath ? resolvePathLike(adapter.authoritativeStatusPath, context) : ""
+  };
+}
+
+function buildQmtInvocation(config, dateText, invocationSource, dryRun) {
+  const context = getContext({ dateText, invocationSource });
+  const adapter = getQmtAdapter(config);
+  const command = renderTemplate(adapter.command, context);
+  const args = [...(adapter.args ?? [])].map((value) => renderTemplate(value, context));
+
+  if (dryRun && Array.isArray(adapter.dryRunArgs)) {
+    args.push(...adapter.dryRunArgs.map((value) => renderTemplate(value, context)));
+  }
+
+  const outputJsonPath = adapter.outputJsonPath
+    ? resolvePathLike(renderTemplate(adapter.outputJsonPath, context), context)
+    : path.join(rootDir, "state", "tmp", "qmt-run-output.json");
+
+  return {
+    adapter,
+    command,
+    args,
+    workingDirectory: adapter.workingDirectory ? resolvePathLike(adapter.workingDirectory, context) : rootDir,
+    authoritativeStatusJson: outputJsonPath,
+    outputJsonPath
   };
 }
 
@@ -900,6 +1179,287 @@ function buildFeishuArtifacts(runId) {
     latestPath: path.join(memoryRoot, "feishu-runtime-latest.json"),
     latestMarkdownPath: path.join(memoryRoot, "feishu-runtime-latest.md"),
     historyPath: path.join(memoryRoot, "feishu-runtime-history.jsonl")
+  };
+}
+
+function buildAutonomyLoopArtifacts(runId) {
+  const stateRoot = path.join(rootDir, "state");
+  const runsRoot = path.join(stateRoot, "runs");
+  const runDir = path.join(runsRoot, runId);
+  const memoryRoot = path.join(stateRoot, "memory");
+
+  return {
+    stateRoot,
+    runsRoot,
+    runDir,
+    memoryRoot,
+    baselinePath: path.join(runDir, "autonomy-baseline.json"),
+    planPath: path.join(runDir, "improvement-plan.json"),
+    evaluationPath: path.join(runDir, "evaluation.json"),
+    resultPath: path.join(runDir, "result.json"),
+    latestPath: path.join(memoryRoot, "autonomy-loop-latest.json"),
+    latestMarkdownPath: path.join(memoryRoot, "autonomy-loop-latest.md"),
+    historyPath: path.join(memoryRoot, "autonomy-loop-history.jsonl")
+  };
+}
+
+function buildQmtRunArtifacts(runId) {
+  const stateRoot = path.join(rootDir, "state");
+  const runsRoot = path.join(stateRoot, "runs");
+  const runDir = path.join(runsRoot, runId);
+  const attemptsDir = path.join(runDir, "attempts");
+  const receiptsRoot = path.join(stateRoot, "receipts", "qmt");
+  const memoryRoot = path.join(stateRoot, "memory");
+
+  return {
+    stateRoot,
+    runsRoot,
+    runDir,
+    attemptsDir,
+    receiptsRoot,
+    memoryRoot,
+    contractPath: path.join(runDir, "contract.json"),
+    runStatePath: path.join(runDir, "run-state.json"),
+    evaluationPath: path.join(runDir, "evaluation.json"),
+    finalReceiptPath: path.join(runDir, "final-receipt.json"),
+    latestReceiptPath: path.join(memoryRoot, "qmt-latest.json"),
+    latestMarkdownPath: path.join(memoryRoot, "qmt-latest.md"),
+    latestRunPath: path.join(memoryRoot, "qmt-latest-run.json"),
+    historyPath: path.join(memoryRoot, "qmt-history.jsonl")
+  };
+}
+
+function buildSchedulingPolicyArtifacts(runId) {
+  const stateRoot = path.join(rootDir, "state");
+  const runsRoot = path.join(stateRoot, "runs");
+  const runDir = path.join(runsRoot, runId);
+  const memoryRoot = path.join(stateRoot, "memory");
+
+  return {
+    stateRoot,
+    runsRoot,
+    runDir,
+    memoryRoot,
+    resultPath: path.join(runDir, "result.json"),
+    latestPath: path.join(memoryRoot, "scheduling-policy-latest.json"),
+    latestMarkdownPath: path.join(memoryRoot, "scheduling-policy-latest.md"),
+    historyPath: path.join(memoryRoot, "scheduling-policy-history.jsonl")
+  };
+}
+
+function buildAutonomyBaseline(loopConfig) {
+  const trainingHistoryPath = path.join(rootDir, "state", "memory", "training-history.jsonl");
+  const feishuHistoryPath = path.join(rootDir, "state", "memory", "feishu-runtime-history.jsonl");
+  const qmtHistoryPath = path.join(rootDir, "state", "memory", "qmt-history.jsonl");
+  const trainingHistory = readJsonLines(trainingHistoryPath, loopConfig.trainingHistoryScanLimit);
+  const feishuHistory = readJsonLines(feishuHistoryPath, loopConfig.feishuHistoryScanLimit);
+  const qmtHistory = readJsonLines(qmtHistoryPath, loopConfig.qmtHistoryScanLimit);
+  const okRuns = trainingHistory.filter((entry) => entry?.outcome?.status === "ok");
+  const skippedRuns = trainingHistory.filter((entry) => entry?.outcome?.status === "skipped");
+  const blockedOrFailedRuns = trainingHistory.filter((entry) => {
+    const lifecycle = String(entry?.harness?.lifecycle_status ?? "");
+    const decision = String(entry?.harness?.final_decision ?? "");
+    return ["blocked", "failed"].includes(lifecycle) || ["blocked", "failed"].includes(decision);
+  });
+  const qmtOkRuns = qmtHistory.filter((entry) => entry?.outcome?.status === "ok");
+  const qmtSkippedRuns = qmtHistory.filter((entry) => entry?.outcome?.status === "skipped");
+  const qmtBlockedOrFailed = qmtHistory.filter((entry) => {
+    const lifecycle = String(entry?.harness?.lifecycle_status ?? "");
+    const decision = String(entry?.harness?.final_decision ?? "");
+    return ["blocked", "failed"].includes(lifecycle) || ["blocked", "failed"].includes(decision);
+  });
+  const feishuCounts = {
+    healthy: feishuHistory.filter((entry) => entry?.lifecycle_status === "healthy").length,
+    recovering: feishuHistory.filter((entry) => entry?.lifecycle_status === "recovering").length,
+    degraded: feishuHistory.filter((entry) => entry?.lifecycle_status === "degraded").length,
+    blocked: feishuHistory.filter((entry) => entry?.lifecycle_status === "blocked").length
+  };
+
+  return {
+    generated_at: nowIso(),
+    sources: {
+      training_history: {
+        path: trainingHistoryPath,
+        scanned_entries: trainingHistory.length
+      },
+      feishu_history: {
+        path: feishuHistoryPath,
+        scanned_entries: feishuHistory.length
+      },
+      qmt_history: {
+        path: qmtHistoryPath,
+        scanned_entries: qmtHistory.length
+      }
+    },
+    training: {
+      total_runs: trainingHistory.length,
+      ok_run_count: okRuns.length,
+      skipped_run_count: skippedRuns.length,
+      blocked_or_failed_count: blockedOrFailedRuns.length,
+      autonomy_ratio: trainingHistory.length === 0
+        ? null
+        : (trainingHistory.length - blockedOrFailedRuns.length) / trainingHistory.length,
+      metrics: {
+        objective_score: collectNumericMetric(okRuns, "summary.objective_score"),
+        validation_calendar_sharpe: collectNumericMetric(okRuns, "summary.validation_calendar_sharpe"),
+        validation_max_drawdown: collectNumericMetric(okRuns, "summary.validation_max_drawdown")
+      },
+      latest_ok_run: okRuns.length > 0
+        ? {
+            generated_at: okRuns[okRuns.length - 1].generated_at ?? null,
+            requested_date: okRuns[okRuns.length - 1].requested_date ?? null,
+            run_id: okRuns[okRuns.length - 1].harness?.run_id ?? null
+          }
+        : null
+    },
+    qmt: {
+      total_runs: qmtHistory.length,
+      ok_run_count: qmtOkRuns.length,
+      skipped_run_count: qmtSkippedRuns.length,
+      blocked_or_failed_count: qmtBlockedOrFailed.length,
+      autonomy_ratio: qmtHistory.length === 0
+        ? null
+        : (qmtHistory.length - qmtBlockedOrFailed.length) / qmtHistory.length,
+      latest_ok_run: qmtOkRuns.length > 0
+        ? {
+            generated_at: qmtOkRuns[qmtOkRuns.length - 1].generated_at ?? null,
+            requested_date: qmtOkRuns[qmtOkRuns.length - 1].requested_date ?? null,
+            run_id: qmtOkRuns[qmtOkRuns.length - 1].harness?.run_id ?? null
+          }
+        : null
+    },
+    feishu: {
+      total_runs: feishuHistory.length,
+      lifecycle_counts: feishuCounts,
+      blocked_ratio: feishuHistory.length === 0 ? null : feishuCounts.blocked / feishuHistory.length
+    }
+  };
+}
+
+function buildImprovementPlan(config, baseline, schedulingPolicy) {
+  const loopConfig = getAutonomyLoopConfig(config);
+  const metricThresholds = getHarnessConfig(config).evaluator.metricThresholds;
+  const operationalCandidates = [];
+  const qualityCandidates = [];
+
+  if (schedulingPolicy.verdict === "degraded") {
+    operationalCandidates.push({
+      id: "review-latest-training-harness",
+      priority: "high",
+      auto_apply: false,
+      reason: "The latest training harness run is degraded, so autonomy cannot improve until that lane is stable again.",
+      validation_target: "training-latest-run.json returns completed/pass on the next successful cycle."
+    });
+  }
+
+  if ((schedulingPolicy.warnings ?? []).some((warning) => warning.startsWith("feishu_"))) {
+    operationalCandidates.push({
+      id: "repair-feishu-runtime-signal",
+      priority: "medium",
+      auto_apply: false,
+      reason: "Notification health is drifting or stale, which weakens unattended operation even if local training is still runnable.",
+      validation_target: "feishu-runtime-latest.json remains healthy and fresh across multiple watchdog cycles."
+    });
+  }
+
+  if (!config.qmt) {
+    operationalCandidates.push({
+      id: "generalize-training-harness-into-qmt-lane",
+      priority: "high",
+      auto_apply: false,
+      reason: "RanchMind still has a validated training lane but not a first-class QMT task lane with the same contract/evaluator/state model.",
+      validation_target: "A dedicated QMT lane gains contract, attempts, evaluation, and final receipt artifacts."
+    });
+  }
+
+  if (Object.keys(metricThresholds ?? {}).length === 0) {
+    qualityCandidates.push({
+      id: "activate-reviewed-metric-thresholds",
+      priority: "high",
+      auto_apply: false,
+      reason: "The harness quality gate is still inactive, so the loop can only measure operational reliability, not model quality.",
+      validation_target: "At least one explicit metric threshold is configured and exercised by a real ok run."
+    });
+  }
+
+  if ((baseline.training.ok_run_count ?? 0) < loopConfig.minSuccessfulRunsForEvaluation) {
+    qualityCandidates.push({
+      id: "accumulate-more-successful-training-runs",
+      priority: "medium",
+      auto_apply: false,
+      reason: `Only ${baseline.training.ok_run_count} successful training runs are available; this is below the ${loopConfig.minSuccessfulRunsForEvaluation}-run floor for trustworthy tuning decisions.`,
+      validation_target: `Collect at least ${loopConfig.minSuccessfulRunsForEvaluation} successful training runs before comparing candidate changes.`
+    });
+  }
+
+  const objectiveAverage = baseline.training.metrics.objective_score.average;
+  if (typeof objectiveAverage === "number" && objectiveAverage < 0) {
+    qualityCandidates.push({
+      id: "investigate-negative-objective-score",
+      priority: "high",
+      auto_apply: false,
+      reason: `Average objective score across successful runs is ${objectiveAverage.toFixed(3)}, so the lane is running but not yet producing healthy output quality.`,
+      validation_target: "Future successful runs show objective_score trending upward toward an operator-approved threshold."
+    });
+  }
+
+  const sharpeAverage = baseline.training.metrics.validation_calendar_sharpe.average;
+  if (typeof sharpeAverage === "number" && sharpeAverage < 0) {
+    qualityCandidates.push({
+      id: "investigate-negative-validation-sharpe",
+      priority: "high",
+      auto_apply: false,
+      reason: `Average validation sharpe across successful runs is ${sharpeAverage.toFixed(3)}, indicating quality issues are currently hidden behind pass/fail operational checks.`,
+      validation_target: "Validation sharpe improves over the next evaluated window of successful runs."
+    });
+  }
+
+  return {
+    generated_at: nowIso(),
+    mode: "recommend_only",
+    readiness: {
+      safe_auto_apply_enabled: false,
+      operator_review_required: true
+    },
+    summary: {
+      total_candidates: operationalCandidates.length + qualityCandidates.length,
+      operational_candidates: operationalCandidates.length,
+      quality_candidates: qualityCandidates.length
+    },
+    operational_candidates: operationalCandidates,
+    quality_candidates: qualityCandidates
+  };
+}
+
+function buildAutonomyEvaluation(baseline, schedulingPolicy, plan) {
+  const insights = [];
+  if ((baseline.training.blocked_or_failed_count ?? 0) > 0) {
+    insights.push("Recent training history still contains blocked or failed runs, so autonomy remains incomplete.");
+  }
+  if ((baseline.training.ok_run_count ?? 0) === 0) {
+    insights.push("No successful training runs are available, so quality evaluation cannot begin.");
+  }
+  if ((plan.quality_candidates ?? []).length > 0) {
+    insights.push("Quality work remains distinct from operational reliability; both must improve before unattended QMT autonomy is credible.");
+  }
+  if ((schedulingPolicy.warnings ?? []).length > 0) {
+    insights.push("Auxiliary runtime signals still emit warnings, so unattended operation would have weak observability.");
+  }
+  if (insights.length === 0) {
+    insights.push("Current signals are stable enough to continue the next bounded improvement cycle.");
+  }
+
+  return {
+    generated_at: nowIso(),
+    autonomy_ready: false,
+    top_insights: insights,
+    scorecard: {
+      scheduling_verdict: schedulingPolicy.verdict,
+      autonomy_ratio: baseline.training.autonomy_ratio,
+      successful_training_runs: baseline.training.ok_run_count,
+      feishu_blocked_ratio: baseline.feishu.blocked_ratio,
+      improvement_candidate_count: plan.summary.total_candidates
+    }
   };
 }
 
@@ -960,6 +1520,120 @@ function createRunContract(config, harnessConfig, dateText, invocationSource, re
   };
 }
 
+function createQmtRunContract(config, harnessConfig, dateText, invocationSource, requestedDryRun, invocation) {
+  const schedulerConfig = getQmtSchedulerConfig(config);
+
+  return {
+    run_type: "qmt",
+    created_at: nowIso(),
+    planner: {
+      style: "structured-contract",
+      summary: "Execute the QMT overnight notify adapter, then evaluate status before accepting the run."
+    },
+    request: {
+      requested_date: dateText,
+      invocation_source: invocationSource,
+      dry_run_requested: requestedDryRun
+    },
+    retry_policy: {
+      max_attempts: harnessConfig.maxAttempts,
+      retry_delay_seconds: harnessConfig.retryDelaySeconds,
+      retryable_failures: [
+        "process_error",
+        "non_json_output",
+        "empty_output",
+        "non_zero_exit"
+      ],
+      retry_behavior: "Only execution failures retry automatically. Unexpected status failures block for operator review.",
+      retry_force_behavior: "Retry attempts re-run the notify script without additional force flags."
+    },
+    evaluator: {
+      accept_statuses: harnessConfig.evaluator.acceptStatuses,
+      required_artifacts_on_ok: harnessConfig.evaluator.requiredArtifactsOnOk,
+      required_outcome_fields_on_ok: harnessConfig.evaluator.requiredOutcomeFieldsOnOk,
+      metric_thresholds: harnessConfig.evaluator.metricThresholds
+    },
+    execution: {
+      platform,
+      command: invocation.command,
+      args: invocation.args,
+      working_directory: invocation.workingDirectory,
+      authoritative_status_json: invocation.authoritativeStatusJson
+    },
+    scheduler: schedulerConfig
+      ? {
+          kind: schedulerConfig.kind,
+          task_path: schedulerConfig.taskPath ?? "",
+          task_name: schedulerConfig.taskName ?? "",
+          task_time: schedulerConfig.taskTime ?? ""
+        }
+      : {
+          kind: "none",
+          task_path: "",
+          task_name: "",
+          task_time: ""
+        }
+  };
+}
+
+function buildQmtReceipt(config, paths, contract, runState, finalAttempt, finalEvaluation) {
+  const schedulerConfig = getQmtSchedulerConfig(config);
+  const legacyReceiptPath = path.join(paths.receiptsRoot, `${runState.run_id}.json`);
+
+  return {
+    generated_at: nowIso(),
+    requested_date: contract.request.requested_date,
+    invocation_source: contract.request.invocation_source,
+    receipt_path: legacyReceiptPath,
+    authoritative_status_json: finalAttempt.authoritative_status_json,
+    harness: {
+      run_id: runState.run_id,
+      run_dir: paths.runDir,
+      contract_path: paths.contractPath,
+      run_state_path: paths.runStatePath,
+      evaluation_path: paths.evaluationPath,
+      lifecycle_status: finalEvaluation.lifecycle_status,
+      final_decision: finalEvaluation.decision,
+      final_reason: finalEvaluation.reason,
+      attempts: runState.attempts.length,
+      max_attempts: contract.retry_policy.max_attempts,
+      retry_delay_seconds: contract.retry_policy.retry_delay_seconds,
+      next_action: finalEvaluation.next_action
+    },
+    planes: {
+      human: {
+        latest_json: paths.latestReceiptPath,
+        latest_markdown: paths.latestMarkdownPath,
+        latest_run_json: paths.latestRunPath,
+        history_jsonl: paths.historyPath
+      },
+      horse: schedulerConfig
+        ? {
+            kind: schedulerConfig.kind,
+            task_path: schedulerConfig.taskPath ?? "",
+            task_name: schedulerConfig.taskName ?? ""
+          }
+        : {
+            kind: "none",
+            task_path: "",
+            task_name: ""
+          },
+      lobster: {
+        platform,
+        command: finalAttempt.command,
+        args: finalAttempt.args,
+        working_directory: finalAttempt.working_directory,
+        exit_code: finalAttempt.exit_code
+      }
+    },
+    outcome: finalAttempt.outcome ?? {
+      status: "error",
+      reason: finalEvaluation.reason,
+      message: finalAttempt.process_error ?? finalAttempt.parse_error ?? "Execution failed before a valid outcome was produced."
+    }
+  };
+}
+
 function writeRunState(paths, previousState, patch) {
   const nextState = {
     ...(previousState ?? {}),
@@ -1010,6 +1684,58 @@ function executeTrainingAttempt(config, runContext, attemptNumber, forceRun) {
   }
   catch {
     record.parse_error = `Training adapter returned non-JSON output: ${record.raw_output}`;
+  }
+
+  return record;
+}
+
+function executeQmtAttempt(config, runContext, attemptNumber) {
+  const dryRun = runContext.dryRun ?? false;
+  const harnessConfig = getQmtHarnessConfig(config);
+  const timeoutMs = (harnessConfig.timeoutSeconds ?? 900) * 1000;
+  const invocation = buildQmtInvocation(config, runContext.dateText, runContext.invocationSource, dryRun);
+  const startedAt = nowIso();
+  ensureDirectory(path.dirname(invocation.outputJsonPath));
+  const result = runCommand(invocation.command, invocation.args, { cwd: invocation.workingDirectory, timeoutMs });
+  const finishedAt = nowIso();
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  const combined = `${stdout}${stderr}`.trim();
+
+  const record = {
+    attempt: attemptNumber,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    dry_run: dryRun,
+    platform,
+    command: invocation.command,
+    args: invocation.args,
+    working_directory: invocation.workingDirectory,
+    authoritative_status_json: invocation.authoritativeStatusJson,
+    exit_code: result.status ?? 1,
+    stdout,
+    stderr,
+    raw_output: stdout.trim() || combined
+  };
+
+  if (result.error) {
+    const isTimeout = result.error.code === "ETIMEDOUT";
+    record.process_error = isTimeout
+      ? `QMT adapter timed out after ${harnessConfig.timeoutSeconds}s. QMT may not be running or the export pipeline is stalled.`
+      : result.error.message;
+    return record;
+  }
+
+  if (!record.raw_output) {
+    record.parse_error = "QMT adapter returned no output.";
+    return record;
+  }
+
+  try {
+    record.outcome = JSON.parse(record.raw_output);
+  }
+  catch {
+    record.parse_error = `QMT adapter returned non-JSON output: ${record.raw_output.slice(0, 400)}`;
   }
 
   return record;
@@ -1359,7 +2085,7 @@ function runTrainingHarness() {
     final_decision: finalEvaluation.decision,
     updated_at: nowIso()
   });
-  fs.writeFileSync(paths.latestMarkdownPath, buildMarkdownSummary(legacyReceipt), "utf8");
+  writeTextFile(paths.latestMarkdownPath, buildMarkdownSummary(legacyReceipt));
   appendJsonLine(paths.historyPath, legacyReceipt);
 
   process.stdout.write(`${JSON.stringify(legacyReceipt, null, 2)}\n`);
@@ -1367,6 +2093,141 @@ function runTrainingHarness() {
     return 0;
   }
   return 1;
+}
+
+function runQmtHarness() {
+  const config = loadConfig();
+  if (!config.qmt) {
+    console.error("QMT lane is not configured. Add a 'qmt' block to ranchmind.config.json.");
+    return 1;
+  }
+
+  const harnessConfig = getQmtHarnessConfig(config);
+  const dateText = parseFlag("--date") ?? new Date().toISOString().slice(0, 10);
+  const invocationSource = parseFlag("--source") ?? "ranchmind.manual";
+  const dryRun = process.argv.includes("--dry-run");
+  const runId = makeQmtRunId();
+  const paths = buildQmtRunArtifacts(runId);
+
+  ensureDirectory(paths.attemptsDir);
+  ensureDirectory(paths.receiptsRoot);
+  ensureDirectory(paths.memoryRoot);
+  trimOldRunDirectories(paths.runsRoot, harnessConfig.runsRetainDays);
+
+  const initialInvocation = buildQmtInvocation(config, dateText, invocationSource, dryRun);
+  const contract = createQmtRunContract(config, harnessConfig, dateText, invocationSource, dryRun, initialInvocation);
+  writeJsonFile(paths.contractPath, contract);
+
+  let runState = writeRunState(paths, null, {
+    run_id: runId,
+    lane: "qmt",
+    status: "running",
+    phase: "planning",
+    started_at: nowIso(),
+    contract_path: paths.contractPath,
+    attempts: [],
+    next_action: "Execute QMT notify attempt 1."
+  });
+
+  const evaluationHistory = [];
+  let finalAttempt = null;
+  let finalEvaluation = null;
+
+  for (let attemptNumber = 1; attemptNumber <= harnessConfig.maxAttempts; attemptNumber += 1) {
+    runState = writeRunState(paths, runState, {
+      phase: "executing",
+      next_action: `Run QMT notify attempt ${attemptNumber}.`
+    });
+
+    const attemptRecord = executeQmtAttempt(config, { dateText, invocationSource, dryRun }, attemptNumber);
+    attemptRecord.attempt_path = path.join(paths.attemptsDir, `attempt-${String(attemptNumber).padStart(2, "0")}.json`);
+    writeJsonFile(attemptRecord.attempt_path, attemptRecord);
+
+    runState = writeRunState(paths, runState, {
+      phase: "evaluating",
+      attempts: [
+        ...runState.attempts,
+        {
+          attempt: attemptNumber,
+          attempt_path: attemptRecord.attempt_path,
+          dry_run: dryRun,
+          exit_code: attemptRecord.exit_code,
+          finished_at: attemptRecord.finished_at
+        }
+      ],
+      next_action: `Evaluate QMT attempt ${attemptNumber}.`
+    });
+
+    let evaluation = evaluateAttempt(harnessConfig, attemptRecord);
+    evaluation = {
+      ...evaluation,
+      attempt: attemptNumber,
+      evaluated_at: nowIso()
+    };
+    evaluationHistory.push(evaluation);
+    finalAttempt = attemptRecord;
+    finalEvaluation = evaluation;
+
+    if (evaluation.decision === "pass") {
+      break;
+    }
+
+    if (evaluation.decision === "retry" && attemptNumber < harnessConfig.maxAttempts) {
+      runState = writeRunState(paths, runState, {
+        status: "running",
+        phase: "waiting_to_retry",
+        next_action: `Retry after ${harnessConfig.retryDelaySeconds} seconds because ${evaluation.reason}.`
+      });
+      sleepMilliseconds(harnessConfig.retryDelaySeconds * 1000);
+      continue;
+    }
+
+    if (evaluation.decision === "retry") {
+      finalEvaluation = finalizeRetryExhausted(evaluation, harnessConfig.maxAttempts);
+    }
+    break;
+  }
+
+  const lifecycleStatus = finalEvaluation.lifecycle_status;
+  runState = writeRunState(paths, runState, {
+    status: lifecycleStatus,
+    phase: "completed",
+    completed_at: nowIso(),
+    next_action: finalEvaluation.next_action,
+    final_decision: finalEvaluation.decision,
+    final_reason: finalEvaluation.reason
+  });
+
+  const evaluationPayload = {
+    run_id: runId,
+    evaluated_at: nowIso(),
+    final_decision: finalEvaluation.decision,
+    lifecycle_status: finalEvaluation.lifecycle_status,
+    final_reason: finalEvaluation.reason,
+    next_action: finalEvaluation.next_action,
+    attempts: evaluationHistory
+  };
+  writeJsonFile(paths.evaluationPath, evaluationPayload);
+
+  const receipt = buildQmtReceipt(config, paths, contract, runState, finalAttempt, finalEvaluation);
+  writeJsonFile(paths.finalReceiptPath, receipt);
+  writeJsonFile(receipt.receipt_path, receipt);
+  writeJsonFile(paths.latestReceiptPath, receipt);
+  writeJsonFile(paths.latestRunPath, {
+    run_id: runId,
+    run_dir: paths.runDir,
+    run_state_path: paths.runStatePath,
+    evaluation_path: paths.evaluationPath,
+    final_receipt_path: paths.finalReceiptPath,
+    lifecycle_status: finalEvaluation.lifecycle_status,
+    final_decision: finalEvaluation.decision,
+    updated_at: nowIso()
+  });
+  writeTextFile(paths.latestMarkdownPath, buildQmtMarkdownSummary(receipt));
+  appendJsonLine(paths.historyPath, receipt);
+
+  process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+  return finalEvaluation.decision === "pass" ? 0 : 1;
 }
 
 function ensureFeishuRuntime() {
@@ -1565,10 +2426,176 @@ function ensureFeishuRuntime() {
 
   writeJsonFile(paths.resultPath, state);
   writeJsonFile(paths.latestPath, state);
-  fs.writeFileSync(paths.latestMarkdownPath, buildFeishuMarkdown(state), "utf8");
+  writeTextFile(paths.latestMarkdownPath, buildFeishuMarkdown(state));
   appendJsonLine(paths.historyPath, state);
 
   process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
+  return 0;
+}
+
+function evaluateSchedulingPolicy({ persist = true } = {}) {
+  const config = loadConfig();
+  const policyConfig = getSchedulingPolicyConfig(config);
+  const runId = `scheduling-policy-${nowIso().replace(/[-:]/g, "").replace(/\./g, "").replace("T", "-").replace("Z", "")}`;
+  const paths = buildSchedulingPolicyArtifacts(runId);
+
+  if (persist) {
+    ensureDirectory(paths.runDir);
+    ensureDirectory(paths.memoryRoot);
+    trimOldRunDirectories(paths.runsRoot, getHarnessConfig(config).runsRetainDays);
+  }
+
+  const latestTrainingRunPath = path.join(rootDir, "state", "memory", "training-latest-run.json");
+  const latestFeishuPath = path.join(rootDir, "state", "memory", "feishu-runtime-latest.json");
+  const trainingHistoryPath = path.join(rootDir, "state", "memory", "training-history.jsonl");
+  const latestTrainingRun = safeReadJson(latestTrainingRunPath);
+  const latestFeishu = safeReadJson(latestFeishuPath);
+  const trainingHistory = readJsonLines(trainingHistoryPath, policyConfig.historyScanLimit);
+  const lastSuccessfulTraining = [...trainingHistory].reverse().find((entry) => entry?.outcome?.status === "ok") ?? null;
+
+  const reasons = [];
+  const warnings = [];
+  let verdict = latestTrainingRun ? "allowed" : "unknown";
+  let nextAction = "Scheduling signals look healthy enough for the next training dispatch.";
+
+  const latestTrainingAgeSeconds = getAgeSeconds(latestTrainingRun?.updated_at);
+  const feishuAgeSeconds = getAgeSeconds(latestFeishu?.generated_at);
+  const feishuStale = latestFeishu
+    ? feishuAgeSeconds === null || feishuAgeSeconds > policyConfig.feishuSnapshotMaxAgeSeconds
+    : false;
+  const lastSuccessfulTrainingAgeSeconds = getAgeSeconds(lastSuccessfulTraining?.generated_at);
+
+  if (!latestTrainingRun) {
+    verdict = "unknown";
+    reasons.push("training_latest_run_missing");
+    nextAction = "Run or inspect a harnessed training lane first so dispatch policy has a durable baseline.";
+  }
+  else if (["failed", "blocked"].includes(String(latestTrainingRun.lifecycle_status ?? "")) || ["failed", "blocked"].includes(String(latestTrainingRun.final_decision ?? ""))) {
+    verdict = "degraded";
+    reasons.push(`training_lane_${latestTrainingRun.lifecycle_status ?? latestTrainingRun.final_decision}`);
+    nextAction = "Review the latest harness run before trusting the next scheduled training invocation.";
+  }
+
+  if (!lastSuccessfulTraining) {
+    warnings.push("no_successful_training_found_in_recent_history");
+  }
+
+  if (!latestFeishu) {
+    warnings.push("feishu_snapshot_missing");
+  }
+  else if (feishuStale) {
+    warnings.push("feishu_snapshot_stale");
+  }
+  else if (latestFeishu.lifecycle_status === "blocked") {
+    warnings.push("feishu_notifications_blocked");
+  }
+  else if (latestFeishu.lifecycle_status === "degraded") {
+    warnings.push("feishu_notifications_degraded");
+  }
+  else if (latestFeishu.lifecycle_status === "recovering") {
+    warnings.push("feishu_notifications_recovering");
+  }
+
+  if (verdict === "allowed" && warnings.includes("feishu_notifications_blocked")) {
+    nextAction = "Training may still run, but notification delivery is blocked; repair Hermes/Feishu separately.";
+  }
+  else if (verdict === "allowed" && warnings.includes("feishu_snapshot_stale")) {
+    nextAction = "Training looks healthy, but refresh Feishu supervision before trusting notification delivery state.";
+  }
+
+  const policy = {
+    policy_version: 1,
+    computed_at: nowIso(),
+    lane: policyConfig.lane,
+    mode: "report_only",
+    verdict,
+    execution_gate: "observe_only",
+    reasons,
+    warnings,
+    next_action: nextAction,
+    sources: {
+      latest_training_run: {
+        path: latestTrainingRunPath,
+        exists: Boolean(latestTrainingRun),
+        updated_at: latestTrainingRun?.updated_at ?? null,
+        age_seconds: latestTrainingAgeSeconds,
+        lifecycle_status: latestTrainingRun?.lifecycle_status ?? null,
+        final_decision: latestTrainingRun?.final_decision ?? null,
+        run_id: latestTrainingRun?.run_id ?? null
+      },
+      feishu_snapshot: {
+        path: latestFeishuPath,
+        exists: Boolean(latestFeishu),
+        generated_at: latestFeishu?.generated_at ?? null,
+        age_seconds: feishuAgeSeconds,
+        stale: feishuStale,
+        lifecycle_status: latestFeishu?.lifecycle_status ?? null,
+        reason: latestFeishu?.reason ?? null
+      },
+      last_successful_training: {
+        path: trainingHistoryPath,
+        scanned_entries: trainingHistory.length,
+        exists: Boolean(lastSuccessfulTraining),
+        generated_at: lastSuccessfulTraining?.generated_at ?? null,
+        age_seconds: lastSuccessfulTrainingAgeSeconds,
+        requested_date: lastSuccessfulTraining?.requested_date ?? null,
+        outcome_status: lastSuccessfulTraining?.outcome?.status ?? null,
+        run_id: lastSuccessfulTraining?.harness?.run_id ?? null
+      }
+    }
+  };
+
+  if (persist) {
+    writeJsonFile(paths.resultPath, policy);
+    writeJsonFile(paths.latestPath, policy);
+    writeTextFile(paths.latestMarkdownPath, buildSchedulingPolicyMarkdown(policy));
+    appendJsonLine(paths.historyPath, policy);
+  }
+
+  return { policy, paths };
+}
+
+function runSchedulingPolicyEvaluation() {
+  const result = evaluateSchedulingPolicy({ persist: true });
+  process.stdout.write(`${JSON.stringify(result.policy, null, 2)}\n`);
+  return 0;
+}
+
+function runAutonomyLoop() {
+  const config = loadConfig();
+  const loopConfig = getAutonomyLoopConfig(config);
+  const runId = `autonomy-loop-${nowIso().replace(/[-:]/g, "").replace(/\./g, "").replace("T", "-").replace("Z", "")}`;
+  const paths = buildAutonomyLoopArtifacts(runId);
+  ensureDirectory(paths.runDir);
+  ensureDirectory(paths.memoryRoot);
+  trimOldRunDirectories(paths.runsRoot, getHarnessConfig(config).runsRetainDays);
+
+  const schedulingPolicy = evaluateSchedulingPolicy({ persist: true }).policy;
+  const baseline = buildAutonomyBaseline(loopConfig);
+  const plan = buildImprovementPlan(config, baseline, schedulingPolicy);
+  const evaluation = buildAutonomyEvaluation(baseline, schedulingPolicy, plan);
+
+  const result = {
+    generated_at: nowIso(),
+    mode: "recommend_only",
+    next_action: plan.summary.total_candidates > 0
+      ? "Use the ranked candidates to drive the next bounded RanchMind improvement change, then rerun the loop after validation."
+      : "No obvious improvement candidates were detected from the current structured signals.",
+    scheduling_policy: schedulingPolicy,
+    baseline,
+    plan,
+    evaluation
+  };
+
+  writeJsonFile(paths.baselinePath, baseline);
+  writeJsonFile(paths.planPath, plan);
+  writeJsonFile(paths.evaluationPath, evaluation);
+  writeJsonFile(paths.resultPath, result);
+  writeJsonFile(paths.latestPath, result);
+  writeTextFile(paths.latestMarkdownPath, buildAutonomyLoopMarkdown(result));
+  appendJsonLine(paths.historyPath, result);
+
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   return 0;
 }
 
@@ -1672,6 +2699,116 @@ function registerTraining() {
   throw new Error(`Unsupported scheduler kind "${schedulerConfig.kind}".`);
 }
 
+function buildWindowsQmtTaskXml(taskPath, taskName, taskTime) {
+  const { hour, minute } = parseTimeText(taskTime);
+  const paddedHour = String(hour).padStart(2, "0");
+  const paddedMinute = String(minute).padStart(2, "0");
+  const now = new Date();
+  const startBoundary = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${paddedHour}:${paddedMinute}:00`;
+  const userId = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : process.env.USERNAME;
+  const taskUri = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
+  const command = process.execPath;
+  const scriptPath = path.join(rootDir, "scripts", "ranchmind.mjs");
+  const argumentsText = `${windowsQuote(scriptPath)} run-qmt --source scheduled_task`;
+
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>RanchMind harness-driven QMT overnight notify orchestrator.</Description>
+    <URI>${escapeXml(taskUri)}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>${startBoundary}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${escapeXml(userId)}</UserId>
+      <LogonType>S4U</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>true</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${escapeXml(command)}</Command>
+      <Arguments>${escapeXml(argumentsText)}</Arguments>
+      <WorkingDirectory>${escapeXml(rootDir)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+function registerQmtTask() {
+  if (platform !== "win32") {
+    throw new Error("QMT task registration is currently implemented for Windows only.");
+  }
+
+  const config = loadConfig();
+  if (!config.qmt) {
+    throw new Error("QMT lane is not configured. Add a 'qmt' block to ranchmind.config.json.");
+  }
+
+  const schedulerConfig = getQmtSchedulerConfig(config);
+  if (!schedulerConfig) {
+    throw new Error("No QMT scheduler is configured in ranchmind.config.json under qmt.scheduler.");
+  }
+
+  const taskTime = parseFlag("--task-time") ?? schedulerConfig.taskTime ?? "14:30";
+  const taskPath = schedulerConfig.taskPath ?? "\\RanchMind\\";
+  const taskName = schedulerConfig.taskName ?? "RanchMindOvernightQmtDaily";
+  const fullName = `${ensureWindowsTaskPath(taskPath)}${taskName}`;
+  const xmlPath = path.join(rootDir, "state", "tmp", "ranchmind-qmt-task.xml");
+  ensureDirectory(path.dirname(xmlPath));
+  fs.writeFileSync(xmlPath, `\uFEFF${buildWindowsQmtTaskXml(taskPath, taskName, taskTime)}`, "utf16le");
+
+  const createResult = runCommand("schtasks.exe", ["/Create", "/TN", fullName, "/XML", xmlPath, "/F"]);
+  fs.rmSync(xmlPath, { force: true });
+  commandOrThrow(createResult, "Failed to create QMT Windows Scheduled Task");
+
+  const query = getTaskQuery(taskPath, taskName);
+  process.stdout.write(`${JSON.stringify({
+    status: "ok",
+    kind: "windows-task",
+    task_path: ensureWindowsTaskPath(taskPath),
+    task_name: taskName,
+    task_time: taskTime,
+    principal_logon_type: "S4U",
+    entrypoint: {
+      command: process.execPath,
+      script: path.join(rootDir, "scripts", "ranchmind.mjs"),
+      args: ["run-qmt", "--source", "scheduled_task"]
+    },
+    query
+  }, null, 2)}\n`);
+  return 0;
+}
+
 function registerFeishuWatchdog() {
   if (platform !== "win32") {
     throw new Error("Feishu watchdog registration is currently implemented for Windows only.");
@@ -1723,8 +2860,13 @@ function status() {
   const latestMarkdownPath = path.join(rootDir, "state", "memory", "training-latest.md");
   const latestRunPath = path.join(rootDir, "state", "memory", "training-latest-run.json");
   const latestFeishuPath = path.join(rootDir, "state", "memory", "feishu-runtime-latest.json");
+  const latestAutonomyLoopPath = path.join(rootDir, "state", "memory", "autonomy-loop-latest.json");
+  const latestQmtRunPath = path.join(rootDir, "state", "memory", "qmt-latest-run.json");
   const latestRun = fs.existsSync(latestRunPath) ? readJson(latestRunPath) : null;
   const latestFeishu = fs.existsSync(latestFeishuPath) ? readJson(latestFeishuPath) : null;
+  const latestAutonomyLoop = fs.existsSync(latestAutonomyLoopPath) ? readJson(latestAutonomyLoopPath) : null;
+  const latestQmtRun = fs.existsSync(latestQmtRunPath) ? readJson(latestQmtRunPath) : null;
+  const schedulingPolicy = evaluateSchedulingPolicy({ persist: false });
   const hermesConfig = getHermesConfig(config);
   const watchdogConfig = getFeishuWatchdogConfig(config);
   const hermesLogPath = hermesConfig?.gatewayLog ? resolvePathLike(hermesConfig.gatewayLog, getContext()) : "";
@@ -1743,6 +2885,12 @@ function status() {
     schedulerStatus = getCronQuery(schedulerConfig.taskName ?? "RanchMindNonTradingFactorTrainingDaily", logPath);
   }
 
+  const qmtSchedulerConfig = getQmtSchedulerConfig(config);
+  let qmtSchedulerStatus = { kind: "none", exists: false };
+  if (qmtSchedulerConfig?.kind === "windows-task") {
+    qmtSchedulerStatus = getTaskQuery(qmtSchedulerConfig.taskPath, qmtSchedulerConfig.taskName);
+  }
+
   process.stdout.write(`${JSON.stringify({
     ranchmind_root: rootDir,
     platform,
@@ -1752,6 +2900,15 @@ function status() {
     latest_receipt: summary.latestReceiptSummary ?? null,
     latest_harness_run: latestRun,
     latest_feishu_runtime: latestFeishu,
+    latest_autonomy_loop: latestAutonomyLoop,
+    latest_qmt_run: latestQmtRun,
+    qmt_scheduler: qmtSchedulerStatus,
+    scheduling_policy: schedulingPolicy.policy,
+    scheduling_policy_paths: {
+      latest_state_path: schedulingPolicy.paths.latestPath,
+      latest_markdown_path: schedulingPolicy.paths.latestMarkdownPath,
+      history_path: schedulingPolicy.paths.historyPath
+    },
     scheduler: schedulerStatus,
     hermes: {
       task_name: hermesConfig?.taskName ?? "",
@@ -1770,6 +2927,10 @@ function help() {
   console.log("RanchMind commands:");
   console.log("  node ./scripts/ranchmind.mjs run-training [--date YYYY-MM-DD] [--force] [--source TEXT]");
   console.log("  node ./scripts/ranchmind.mjs register-training [--task-time HH:mm] [--disable-legacy]");
+  console.log("  node ./scripts/ranchmind.mjs run-qmt [--date YYYY-MM-DD] [--dry-run] [--source TEXT]");
+  console.log("  node ./scripts/ranchmind.mjs register-qmt [--task-time HH:mm]");
+  console.log("  node ./scripts/ranchmind.mjs evaluate-scheduling");
+  console.log("  node ./scripts/ranchmind.mjs run-autonomy-loop");
   console.log("  node ./scripts/ranchmind.mjs ensure-feishu-runtime");
   console.log("  node ./scripts/ranchmind.mjs register-feishu-watchdog");
   console.log("  node ./scripts/ranchmind.mjs status");
@@ -1789,6 +2950,22 @@ function main() {
 
   if (command === "register-training") {
     return registerTraining();
+  }
+
+  if (command === "run-qmt") {
+    return runQmtHarness();
+  }
+
+  if (command === "register-qmt") {
+    return registerQmtTask();
+  }
+
+  if (command === "evaluate-scheduling") {
+    return runSchedulingPolicyEvaluation();
+  }
+
+  if (command === "run-autonomy-loop") {
+    return runAutonomyLoop();
   }
 
   if (command === "ensure-feishu-runtime") {
