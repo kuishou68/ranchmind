@@ -86,9 +86,9 @@ Instead of choosing between an agent farm, a cron bot, or a memory store, RanchM
 
 ---
 
-## 🛠️ Local MVP: Non-Trading Day Factor Training
+## 🛠️ Local MVP: Automated Task Workflow
 
-This repository includes a working MVP for the **Windows KD training workflow**.
+This repository includes a working MVP for a **generalized automated task workflow**.
 
 ### Commands
 
@@ -102,28 +102,28 @@ node ./scripts/ranchmind.mjs evaluate-scheduling
 # Run the bounded autonomy/improvement loop
 node ./scripts/ranchmind.mjs run-autonomy-loop
 
-# Run a manual harnessed training task
+# Run a manual harnessed task
 node ./scripts/ranchmind.mjs run-training --date 2026-05-17 --source ranchmind.manual
 
-# Register the task in Windows Task Scheduler
-node ./scripts/ranchmind.mjs register-training --disable-legacy
+# Register the task in the system scheduler
+node ./scripts/ranchmind.mjs register-training
 
-# Inspect and repair the Feishu-facing runtime
+# Inspect and repair the messaging runtime
 node ./scripts/ranchmind.mjs ensure-feishu-runtime
 
-# Register the Feishu watchdog
+# Register the messaging watchdog
 node ./scripts/ranchmind.mjs register-feishu-watchdog
 ```
 
 ### Harness runtime
 
-For the training lane, `run-training` is now a full harness, not a thin wrapper:
+The `run-training` command is a full harness designed for any long-running task:
 
 1. **Plan / contract**
    - writes `contract.json`
    - freezes retry policy, acceptance checks, command, args, and scheduler context
 2. **Execute**
-   - runs the configured training adapter
+   - runs the configured task adapter
    - records each attempt into `attempts/attempt-NN.json`
 3. **Evaluate**
    - separately checks outcome status and required artifacts
@@ -131,13 +131,12 @@ For the training lane, `run-training` is now a full harness, not a thin wrapper:
    - blocks metric/policy failures for operator review instead of looping blindly
 4. **Finalize**
    - writes `evaluation.json`, `run-state.json`, and `final-receipt.json`
-   - updates the legacy `training-latest.json` / `.md` memory files for backward compatibility
 
 ### Platform Adapters
 
-| Platform | Training Adapter (Lobster) | Scheduler Adapter (Horse) |
+| Platform | Task Adapter (Lobster) | Scheduler Adapter (Horse) |
 | --- | --- | --- |
-| **Windows** | PowerShell KD script | Windows Scheduled Task |
+| **Windows** | PowerShell/CLI script | Windows Scheduled Task |
 | **macOS** | CLI (Configurable) | cron |
 | **Linux** | CLI (Configurable) | cron |
 
