@@ -105,7 +105,10 @@
       "requiredOutcomeFieldsOnOk": [
         "target_end_date"
       ],
-      "metricThresholds": {}
+      "metricThresholds": {
+        "summary.objective_score": { "min": -200.0 },
+        "summary.validation_calendar_sharpe": { "min": -5.0 }
+      }
     }
   },
   "schedulingPolicy": {
@@ -131,6 +134,8 @@
           "{{root}}\\..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-KdOpenHumanOvernightNotify.ps1",
           "-RepoRoot",
           "{{root}}\\..\\cocoon-trade\\cocoon-trade",
+          "-Date",
+          "{{date}}",
           "-OutputJson",
           "{{root}}\\state\\tmp\\qmt-run-output.json"
         ],
