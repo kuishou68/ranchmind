@@ -131,6 +131,9 @@ function renderTemplate(value, context) {
     .replace(/\{\{root\}\}/g, context.rootDir)
     .replace(/\{\{home\}\}/g, context.homeDir)
     .replace(/\{\{date\}\}/g, context.dateText ?? "")
+    .replace(/\{\{qimenMethod\}\}/g, context.qimenMethod ?? "1")
+    .replace(/\{\{limitStocks\}\}/g, context.limitStocks ?? "300")
+    .replace(/\{\{startDate\}\}/g, context.startDate ?? "2024-01-01")
     .replace(/\{\{invocationSource\}\}/g, context.invocationSource ?? "")
     .replace(/\{\{platform\}\}/g, context.platform);
 }
@@ -151,13 +154,16 @@ function loadConfig() {
   return readJson(path.join(rootDir, "ranchmind.config.json"));
 }
 
-function getContext({ dateText = null, invocationSource = null } = {}) {
+function getContext({ dateText = null, invocationSource = null, qimenMethod = null, limitStocks = null, startDate = null } = {}) {
   return {
     rootDir,
     homeDir: os.homedir(),
     platform,
     dateText,
-    invocationSource
+    invocationSource,
+    qimenMethod: qimenMethod ?? parseFlag("--qimen-method") ?? "1",
+    limitStocks: limitStocks ?? parseFlag("--limit-stocks") ?? "300",
+    startDate: startDate ?? parseFlag("--start-date") ?? "2024-01-01"
   };
 }
 
