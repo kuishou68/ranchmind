@@ -5,12 +5,24 @@
 
 RanchMind is a **closed-loop agent runtime** designed to integrate execution, scheduling, and memory into a unified control plane.
 
-It now includes a **harness-driven runtime** for long-running work:
+---
 
-- a **planner contract** written before execution starts
-- a **generator/executor** that performs the work
-- an **evaluator** that judges the result against explicit acceptance checks
-- durable handoff artifacts so the next run can inspect what happened instead of starting blind
+## 🇨🇳 中文介绍
+
+> **龙虾 + 马 + 人**  
+> 龙虾负责写代码（执行），马负责运任务（调度），人负责记初心（记忆）。
+
+RanchMind 是一个**闭环 Agent 运行环境**，旨在将执行、调度和记忆整合到一个统一的控制平面中。
+
+### 🧬 架构哲学：一个“数字生命体”
+RanchMind 不仅仅是一个脚本集合，它是一个具有自我进化能力的本地算力中枢，深度融合了三大开源理念：
+
+1.  **龙虾平面 (Lobster / OpenClaw) —— 执行肌肉**  
+    继承了 **OpenClaw** 对本地环境的极致控制力。它直接深入操作系统底层，调度 PowerShell、Python 矩阵运算并监控进程状态。它是系统的“肌肉”，将复杂的因子训练任务拆解为稳健的、可重试的 Attempt。
+2.  **马平面 (Horse / Hermes) —— 调度脊梁**  
+    借鉴了 **Hermes** 的路由与分发哲学。它解决了长任务在本地运行时的“信任与连接”危机。无论任务运行 1 小时还是 10 小时，马平面确保任务在后台静默、有序地排队，并通过各种通道保持与操作员的神经连接。
+3.  **人平面 (Human / OpenHuman) —— 进化的灵魂**  
+    这是 RanchMind 最具前瞻性的部分。受 **OpenHuman** 启发，它不只是存日志，而是在构建 **持久化凭证（记忆）**。每一次运行的成败都会转化为“经验”，系统利用这些记忆进行自我评价与质量门禁。
 
 ---
 
