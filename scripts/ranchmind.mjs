@@ -3163,6 +3163,7 @@ function help() {
   console.log("  node ./scripts/ranchmind.mjs run-autonomy-loop");
   console.log("  node ./scripts/ranchmind.mjs ensure-feishu-runtime");
   console.log("  node ./scripts/ranchmind.mjs register-feishu-watchdog");
+  console.log("  node ./scripts/ranchmind.mjs serve [--port 3000]");
   console.log("  node ./scripts/ranchmind.mjs status");
 }
 
@@ -3208,6 +3209,18 @@ function main() {
 
   if (command === "status") {
     return status();
+  }
+
+  if (command === "serve") {
+    const port = parseFlag("--port") ?? "3000";
+    const serverPath = path.join(rootDir, "apps", "human-plane", "server.mjs");
+    console.log(`Starting Human Plane Dashboard on port ${port}...`);
+    const proc = spawnSync(process.execPath, [serverPath], {
+      cwd: rootDir,
+      stdio: "inherit",
+      env: { ...process.env, PORT: port }
+    });
+    return proc.status ?? 0;
   }
 
   console.error(`Unknown RanchMind command: ${command}`);

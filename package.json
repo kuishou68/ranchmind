@@ -18,5 +18,8 @@
     "run:autonomy-loop": "node ./scripts/ranchmind.mjs run-autonomy-loop",
     "ensure:feishu": "node ./scripts/ranchmind.mjs ensure-feishu-runtime",
     "register:feishu": "node ./scripts/ranchmind.mjs register-feishu-watchdog"
+  },
+  "devDependencies": {
+    "express": "^5.2.1"
   }
 }

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RanchMind | Mission Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #0a0a0c;
+            --panel-bg: #111114;
+            --lobster-red: #ff3e3e;
+            --horse-blue: #3e92ff;
+            --human-green: #00f294;
+            --border-glow: rgba(255, 255, 255, 0.05);
+        }
+        body { 
+            font-family: 'Space Grotesk', sans-serif; 
+            background-color: var(--bg-deep); 
+            color: #d1d1d1;
+            overflow-x: hidden;
+        }
+        .mono { font-family: 'Fira Code', monospace; }
+        .panel { 
+            background: var(--panel-bg); 
+            border: 1px solid var(--border-glow);
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .panel:hover { border-color: rgba(255,255,255,0.15); }
+        .glow-red { box-shadow: 0 0 15px rgba(255, 62, 62, 0.2); }
+        .glow-blue { box-shadow: 0 0 15px rgba(62, 146, 255, 0.2); }
+        .glow-green { box-shadow: 0 0 15px rgba(0, 242, 148, 0.2); }
+        
+        .status-pill {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Scanline effect */
+        body::before {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.02), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.02));
+            z-index: 100;
+            background-size: 100% 4px, 3px 100%;
+            pointer-events: none;
+        }
+
+        .metric-value { font-family: 'Fira Code', monospace; font-size: 1.5rem; font-weight: 500; }
+        .metric-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; }
+
+        @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .animate-pulse-soft { animation: pulse-soft 3s infinite; }
+    </style>
+</head>
+<body class="p-6 lg:p-10">
+    <!-- Header -->
+    <header class="max-w-7xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div class="flex items-center gap-4">
+            <div class="w-12 h-12 bg-white rounded-lg flex items-center justify-center">
+                <svg viewBox="0 0 24 24" class="w-8 h-8 text-black fill-current"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
+            </div>
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight text-white">RANCHMIND</h1>
+                <p class="text-xs mono text-gray-500 uppercase tracking-widest">Closed-Loop Factor Harness</p>
+            </div>
+        </div>
+        <div class="flex gap-8">
+            <div class="text-right">
+                <div class="metric-label">System Mode</div>
+                <div class="text-white text-sm mono">Autonomous Scientist</div>
+            </div>
+            <div class="text-right border-l border-gray-800 pl-8">
+                <div class="metric-label">Heartbeat</div>
+                <div id="heartbeat" class="text-human-green text-sm mono animate-pulse-soft">SYNCED</div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto grid grid-cols-12 gap-6">
+        
+        <!-- Left: functional Planes -->
+        <div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
+            
+            <!-- Lobster Plane -->
+            <div class="panel p-6 rounded-xl relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-4 opacity-10">
+                    <span class="text-4xl">🦞</span>
+                </div>
+                <div class="flex items-center gap-2 mb-6">
+                    <div class="w-2 h-2 rounded-full bg-lobster-red shadow-[0_0_8px_var(--lobster-red)]"></div>
+                    <h2 class="text-sm font-bold text-white tracking-widest uppercase">Lobster Plane</h2>
+                </div>
+                <div class="mb-4">
+                    <div class="metric-label text-[0.6rem] mb-1">Engine Source</div>
+                    <div class="text-xs mono text-red-400/80 uppercase">OpenClaw Execution Core</div>
+                </div>
+                <div id="lobster-display" class="space-y-4">
+                    <div class="bg-black/40 p-4 rounded border border-white/5">
+                        <div class="text-[0.65rem] text-gray-500 uppercase mb-2">Active Task</div>
+                        <div class="text-sm text-gray-300 italic mono" id="active-task-id">System Standby</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Horse Plane -->
+            <div class="panel p-6 rounded-xl relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-4 opacity-10">
+                    <span class="text-4xl">🐎</span>
+                </div>
+                <div class="flex items-center gap-2 mb-6">
+                    <div class="w-2 h-2 rounded-full bg-horse-blue shadow-[0_0_8px_var(--horse-blue)]"></div>
+                    <h2 class="text-sm font-bold text-white tracking-widest uppercase">Horse Plane</h2>
+                </div>
+                <div class="mb-4">
+                    <div class="metric-label text-[0.6rem] mb-1">Engine Source</div>
+                    <div class="text-xs mono text-blue-400/80 uppercase">Hermes Dispatcher</div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-black/40 p-3 rounded border border-white/5">
+                        <div class="metric-label">Status</div>
+                        <div class="text-xs text-blue-300 mono mt-1">SCD-ACTIVE</div>
+                    </div>
+                    <div class="bg-black/40 p-3 rounded border border-white/5">
+                        <div class="metric-label">Cycle</div>
+                        <div class="text-xs text-gray-300 mono mt-1 text-center">10:20</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Human Plane -->
+            <div class="panel p-6 rounded-xl relative overflow-hidden border-human-green/20">
+                <div class="absolute top-0 right-0 p-4 opacity-10">
+                    <span class="text-4xl">👤</span>
+                </div>
+                <div class="flex items-center gap-2 mb-6">
+                    <div class="w-2 h-2 rounded-full bg-human-green shadow-[0_0_8px_var(--human-green)]"></div>
+                    <h2 class="text-sm font-bold text-white tracking-widest uppercase">Human Plane</h2>
+                </div>
+                <div class="mb-4">
+                    <div class="metric-label text-[0.6rem] mb-1">Engine Source</div>
+                    <div class="text-xs mono text-emerald-400/80 uppercase">OpenHuman Memory Graph</div>
+                </div>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-end border-b border-white/5 pb-2">
+                        <div class="metric-label">Gating Status</div>
+                        <div id="gate-pill" class="status-pill bg-gray-800 text-gray-400">INITIALIZING</div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-center">
+                        <div class="py-2">
+                            <div class="metric-label">Target Sharpe</div>
+                            <div class="text-white mono text-lg">> 1.2</div>
+                        </div>
+                        <div class="py-2">
+                            <div class="metric-label">Current Best</div>
+                            <div id="best-metric" class="text-human-green mono text-lg">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Center/Right: Detailed Metrics & Logs -->
+        <div class="col-span-12 lg:col-span-8 flex flex-col gap-6">
+            
+            <!-- Factor Training KPIs -->
+            <div class="panel p-8 rounded-xl bg-gradient-to-br from-[#111114] to-[#0a0a0c]">
+                <h3 class="metric-label mb-6 text-gray-400 border-b border-white/5 pb-4 flex justify-between items-center">
+                    <span>KD Factor Optimization Analytics</span>
+                    <span class="text-[0.6rem] text-gray-600 mono" id="latest-run-timestamp">--</span>
+                </h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-8">
+                    <div>
+                        <div class="metric-label">Objective Score</div>
+                        <div id="stat-objective" class="metric-value text-white">--</div>
+                    </div>
+                    <div>
+                        <div class="metric-label">Validation Sharpe</div>
+                        <div id="stat-sharpe" class="metric-value text-human-green">--</div>
+                    </div>
+                    <div>
+                        <div class="metric-label">Full Hist Sharpe</div>
+                        <div id="stat-full-sharpe" class="metric-value text-gray-400">--</div>
+                    </div>
+                    <div>
+                        <div class="metric-label">Max Drawdown</div>
+                        <div id="stat-drawdown" class="metric-value text-red-500/80">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ledger & Console -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
+                <!-- Run Ledger -->
+                <div class="panel rounded-xl flex flex-col h-[400px]">
+                    <div class="p-4 border-b border-white/5 flex justify-between items-center">
+                        <span class="metric-label">Recent Run Ledger</span>
+                        <span class="text-[0.6rem] mono text-gray-700">LATEST 5</span>
+                    </div>
+                    <div id="ledger-container" class="flex-1 overflow-y-auto p-4 space-y-2">
+                        <!-- Entries -->
+                    </div>
+                </div>
+
+                <!-- Console -->
+                <div class="panel rounded-xl flex flex-col bg-black h-[400px] border-l-4 border-l-red-900/30">
+                    <div class="p-4 border-b border-white/5 flex justify-between items-center bg-zinc-900/50">
+                        <span class="metric-label">Terminal Recipt</span>
+                        <span class="text-[0.6rem] mono text-gray-500" id="console-id">WAITING...</span>
+                    </div>
+                    <pre id="console-output" class="flex-1 overflow-auto p-6 text-[0.7rem] mono leading-relaxed text-zinc-500 scrollbar-hide">Select a run to analyze durable receipts...</pre>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="max-w-7xl mx-auto mt-10 pt-6 border-t border-gray-900 flex justify-between items-center">
+        <div class="text-[0.6rem] mono text-gray-700 uppercase tracking-widest">
+            OpenClaw x Hermes x OpenHuman Synergy Architecture
+        </div>
+        <div class="flex gap-4">
+            <div class="w-1 h-1 bg-lobster-red rounded-full opacity-50"></div>
+            <div class="w-1 h-1 bg-horse-blue rounded-full opacity-50"></div>
+            <div class="w-1 h-1 bg-human-green rounded-full opacity-50"></div>
+        </div>
+    </footer>
+
+    <script>
+        const update = async () => {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                // Update Metadata
+                if (data.training?.generated_at) {
+                    document.getElementById('latest-run-timestamp').innerText = new Date(data.training.generated_at).toISOString();
+                }
+
+                // Update Human Plane / KPIs
+                if (data.training?.summary) {
+                    const s = data.training.summary;
+                    document.getElementById('stat-objective').innerText = s.objective_score?.toFixed(2) || '0.00';
+                    document.getElementById('stat-sharpe').innerText = s.validation_calendar_sharpe?.toFixed(2) || '0.00';
+                    document.getElementById('stat-full-sharpe').innerText = s.full_calendar_sharpe?.toFixed(2) || '0.00';
+                    document.getElementById('stat-drawdown').innerText = (s.full_max_drawdown * 100)?.toFixed(1) + '%' || '0%';
+                    document.getElementById('best-metric').innerText = s.validation_calendar_sharpe?.toFixed(2);
+                    
+                    const gate = document.getElementById('gate-pill');
+                    if (s.validation_calendar_sharpe > 1.2) {
+                        gate.innerText = "CRITERIA MET";
+                        gate.className = "status-pill bg-human-green/20 text-human-green";
+                    } else {
+                        gate.innerText = "RESEARCHING";
+                        gate.className = "status-pill bg-red-900/20 text-lobster-red animate-pulse-soft";
+                    }
+                }
+
+                // Update Active Runs
+                const ledger = document.getElementById('ledger-container');
+                ledger.innerHTML = data.active_runs.map(run => `
+                    <div class="panel bg-black/20 p-3 rounded border border-white/5 flex justify-between items-center cursor-pointer hover:bg-white/5 group" onclick="loadLog('${run.id}')">
+                        <div class="flex flex-col">
+                            <span class="text-[0.65rem] mono text-gray-500 group-hover:text-gray-300 transition-colors">${run.id}</span>
+                            <span class="text-[0.6rem] text-gray-700">${new Date(run.updated_at).toLocaleTimeString()}</span>
+                        </div>
+                        <span class="status-pill ${run.status === 'completed' ? 'text-human-green' : (run.status === 'failed' ? 'text-red-500' : 'text-blue-400')}">
+                            ${run.phase || run.status}
+                        </span>
+                    </div>
+                `).join('');
+
+                // Update Lobster
+                const active = data.active_runs.find(r => r.phase === 'executing' || r.phase === 'evaluating');
+                const taskDisplay = document.getElementById('active-task-id');
+                if (active) {
+                    taskDisplay.innerText = active.id;
+                    taskDisplay.classList.add('text-red-400', 'animate-pulse');
+                } else {
+                    taskDisplay.innerText = "System Standby";
+                    taskDisplay.classList.remove('text-red-400', 'animate-pulse');
+                }
+
+            } catch (e) {
+                document.getElementById('heartbeat').innerText = 'OFFLINE';
+                document.getElementById('heartbeat').className = 'text-red-500 text-sm mono';
+            }
+        };
+
+        const loadLog = async (id) => {
+            document.getElementById('console-id').innerText = id.toUpperCase();
+            try {
+                const res = await fetch(`/api/run/${id}/log`);
+                const log = await res.json();
+                const output = document.getElementById('console-output');
+                
+                let text = `[INITIALIZING HARNESS CONTRACT]\n`;
+                text += `ID: ${id}\nTIME: ${new Date(log.started_at).toISOString()}\n`;
+                text += `ADAPTER: win32-powershell-kd\n`;
+                text += `--------------------------------------------------\n\n`;
+                
+                if (log.stdout) text += log.stdout;
+                else if (log.stderr) text += `[ERROR_STREAM]\n${log.stderr}`;
+                else text += `[STDOUT_EMPTY] Execution in progress or internal failure.`;
+
+                output.innerText = text;
+                output.scrollTop = output.scrollHeight;
+                output.classList.remove('text-zinc-500');
+                output.classList.add('text-zinc-300');
+            } catch (e) {
+                document.getElementById('console-output').innerText = "FATAL: FAILED TO RETRIEVE LOG STREAM";
+            }
+        }
+
+        setInterval(update, 3000);
+        update();
+    </script>
+</body>
+</html>
