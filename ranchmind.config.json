@@ -21,6 +21,10 @@
           "{{limitStocks}}",
           "-QimenMethod",
           "{{qimenMethod}}",
+          "-Haircut",
+          "{{haircut}}",
+          "-Amplifier",
+          "{{amplifier}}",
           "-InvocationSource",
           "{{invocationSource}}"
         ],
@@ -41,7 +45,11 @@
           "--limit-stocks",
           "{{limitStocks}}",
           "--qimen-method",
-          "{{qimenMethod}}"
+          "{{qimenMethod}}",
+          "--haircut",
+          "{{haircut}}",
+          "--amplifier",
+          "{{amplifier}}"
         ],
         "forceArgs": [
           "--force"
@@ -60,7 +68,11 @@
           "--limit-stocks",
           "{{limitStocks}}",
           "--qimen-method",
-          "{{qimenMethod}}"
+          "{{qimenMethod}}",
+          "--haircut",
+          "{{haircut}}",
+          "--amplifier",
+          "{{amplifier}}"
         ],
         "forceArgs": [
           "--force"
@@ -128,7 +140,9 @@
         "output_json",
         "latest_json"
       ],
-      "requiredOutcomeFieldsOnOk": [],
+      "requiredOutcomeFieldsOnOk": [
+        "target_end_date"
+      ],
       "metricThresholds": {
         "summary.objective_score": { "min": 0.0 },
         "summary.validation_calendar_sharpe": { "min": 1.2 }

@@ -134,6 +134,8 @@ function renderTemplate(value, context) {
     .replace(/\{\{qimenMethod\}\}/g, context.qimenMethod ?? "1")
     .replace(/\{\{limitStocks\}\}/g, context.limitStocks ?? "300")
     .replace(/\{\{startDate\}\}/g, context.startDate ?? "2024-01-01")
+    .replace(/\{\{haircut\}\}/g, context.haircut ?? "0.45")
+    .replace(/\{\{amplifier\}\}/g, context.amplifier ?? "1.50")
     .replace(/\{\{invocationSource\}\}/g, context.invocationSource ?? "")
     .replace(/\{\{platform\}\}/g, context.platform);
 }
@@ -154,7 +156,7 @@ function loadConfig() {
   return readJson(path.join(rootDir, "ranchmind.config.json"));
 }
 
-function getContext({ dateText = null, invocationSource = null, qimenMethod = null, limitStocks = null, startDate = null } = {}) {
+function getContext({ dateText = null, invocationSource = null, qimenMethod = null, limitStocks = null, startDate = null, haircut = null, amplifier = null } = {}) {
   return {
     rootDir,
     homeDir: os.homedir(),
@@ -163,7 +165,9 @@ function getContext({ dateText = null, invocationSource = null, qimenMethod = nu
     invocationSource,
     qimenMethod: qimenMethod ?? parseFlag("--qimen-method") ?? "1",
     limitStocks: limitStocks ?? parseFlag("--limit-stocks") ?? "300",
-    startDate: startDate ?? parseFlag("--start-date") ?? "2024-01-01"
+    startDate: startDate ?? parseFlag("--start-date") ?? "2024-01-01",
+    haircut: haircut ?? parseFlag("--haircut") ?? "0.45",
+    amplifier: amplifier ?? parseFlag("--amplifier") ?? "1.50"
   };
 }
 
