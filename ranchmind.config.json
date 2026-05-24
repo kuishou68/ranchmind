@@ -15,6 +15,12 @@
           "{{root}}\\examples\\run-task.ps1",
           "-Date",
           "{{date}}",
+          "-StartDate",
+          "{{startDate}}",
+          "-LimitStocks",
+          "{{limitStocks}}",
+          "-QimenMethod",
+          "{{qimenMethod}}",
           "-InvocationSource",
           "{{invocationSource}}"
         ],
@@ -26,15 +32,39 @@
       },
       "darwin": {
         "command": "bash",
-        "args": ["{{root}}/examples/run-task.sh", "--date", "{{date}}"],
-        "forceArgs": ["--force"],
+        "args": [
+          "{{root}}/examples/run-task.sh",
+          "--date",
+          "{{date}}",
+          "--start-date",
+          "{{startDate}}",
+          "--limit-stocks",
+          "{{limitStocks}}",
+          "--qimen-method",
+          "{{qimenMethod}}"
+        ],
+        "forceArgs": [
+          "--force"
+        ],
         "workingDirectory": "{{root}}",
         "authoritativeStatusPath": "{{root}}/state/tmp/latest_status.json"
       },
       "linux": {
         "command": "bash",
-        "args": ["{{root}}/examples/run-task.sh", "--date", "{{date}}"],
-        "forceArgs": ["--force"],
+        "args": [
+          "{{root}}/examples/run-task.sh",
+          "--date",
+          "{{date}}",
+          "--start-date",
+          "{{startDate}}",
+          "--limit-stocks",
+          "{{limitStocks}}",
+          "--qimen-method",
+          "{{qimenMethod}}"
+        ],
+        "forceArgs": [
+          "--force"
+        ],
         "workingDirectory": "{{root}}",
         "authoritativeStatusPath": "{{root}}/state/tmp/latest_status.json"
       }
@@ -100,7 +130,8 @@
       ],
       "requiredOutcomeFieldsOnOk": [],
       "metricThresholds": {
-        "summary.objective_score": { "min": 0.0 }
+        "summary.objective_score": { "min": 0.0 },
+        "summary.validation_calendar_sharpe": { "min": 1.2 }
       }
     }
   },
