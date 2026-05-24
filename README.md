@@ -58,6 +58,21 @@ graph TD
 
 ---
 
+## 🧬 Architectural Philosophy: A "Digital Lifeform"
+
+RanchMind is not just a collection of scripts; it is an **autonomous compute hub** that deeply synthesizes three distinct open-source philosophies into a unified entity:
+
+### 1. The Lobster Plane (OpenClaw) — The Execution Muscle
+Inheriting the deep environmental control of **OpenClaw**, the Lobster Plane doesn't just make API calls—it dives directly into your local OS. It commands PowerShell, orchestrates Python matrix calculations, and manages process locks. It is the raw "muscle" that breaks down complex factor training tasks into robust, retriable attempts.
+
+### 2. The Horse Plane (Hermes) — The Dispatch Backbone
+Drawing from the routing philosophy of **Hermes**, the Horse Plane solves the "trust and connectivity" crisis of long-running local tasks. Whether a training job takes 1 hour or 10 hours, this plane ensures tasks queue silently and reliably in the background, maintaining a persistent nerve connection with the operator via channels like Feishu.
+
+### 3. The Human Plane (OpenHuman) — The Evolutionary Soul
+This is RanchMind's most forward-looking component. Inspired by **OpenHuman**, it doesn't just log data; it builds **Durable Receipts (Memory)**. Every execution—success or failure—becomes "experience." The system uses this memory to self-evaluate: *"This run only achieved a Sharpe of 0.8; that is unacceptable. I must rollback and find a better parameter configuration."* This strict Quality Gating elevates RanchMind from a mere automation tool into an autonomous research scientist.
+
+---
+
 ## 🧠 Problems Solved
 
 RanchMind addresses the "missing link" in current AI agent architectures:
