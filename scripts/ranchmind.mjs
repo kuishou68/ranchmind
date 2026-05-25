@@ -2833,6 +2833,75 @@ function runAutonomyLoop() {
   return 0;
 }
 
+function runScienceLoop() {
+  const config = loadConfig();
+  const historyPath = path.join(rootDir, "state", "memory", "training-history.jsonl");
+  const history = readJsonLines(historyPath, 100);
+  
+  // Find the latest run that failed quality gate (blocked) or the latest ok run
+  const latestRun = history[history.length - 1];
+  if (!latestRun) {
+    console.log("No run history found. Launching initial baseline experiment...");
+    return runTrainingHarness(); // Standard baseline
+  }
+
+  const isBlocked = latestRun.harness?.final_decision === "blocked";
+  const sharpe = latestRun.outcome?.summary?.validation_calendar_sharpe ?? -100;
+  
+  console.log(`Analyzing latest run: ${latestRun.harness?.run_id} (Sharpe: ${sharpe.toFixed(3)}, Decision: ${latestRun.harness?.final_decision})`);
+
+  if (!isBlocked && sharpe > 1.2) {
+    console.log("Quality target already achieved. No further science required for this day.");
+    return 0;
+  }
+
+  // Generate new hypothesis
+  const context = getContext();
+  const currentHaircut = parseFloat(latestRun.lobster?.args?.find((_, i, a) => a[i-1] === "-Haircut") ?? "0.45");
+  const currentAmplifier = parseFloat(latestRun.lobster?.args?.find((_, i, a) => a[i-1] === "-Amplifier") ?? "1.50");
+  const currentMethod = parseInt(latestRun.lobster?.args?.find((_, i, a) => a[i-1] === "-QimenMethod") ?? "1");
+
+  let nextHaircut = currentHaircut;
+  let nextAmplifier = currentAmplifier;
+  let nextMethod = currentMethod;
+
+  if (isBlocked) {
+    // Attempt to make the model more robust by reducing hair-trigger parameters
+    if (currentHaircut > 0.30) {
+      nextHaircut = (currentHaircut - 0.05).toFixed(2);
+      console.log(`Hypothesis: Lowering Haircut to ${nextHaircut} might improve Sharpe by reducing positive penalty.`);
+    } else if (currentAmplifier > 1.0) {
+      nextAmplifier = (currentAmplifier - 0.20).toFixed(2);
+      console.log(`Hypothesis: Lowering Amplifier to ${nextAmplifier} might reduce volatility impact.`);
+    } else if (currentMethod === 1) {
+      nextMethod = 2;
+      console.log("Hypothesis: Switching to Qimen Method 2 (置閏) for better randomness handling.");
+    } else {
+      console.log("Exhausted obvious parameter variations for this date. Resetting and shifting window...");
+      nextHaircut = "0.45";
+      nextAmplifier = "1.50";
+    }
+  }
+
+  console.log(`Launching next scientific experiment: Haircut=${nextHaircut}, Amplifier=${nextAmplifier}, Method=${nextMethod}`);
+  
+  // Update process.argv to simulate a forced training run with these parameters
+  process.argv = [
+    process.argv[0],
+    process.argv[1],
+    "run-training",
+    "--date", latestRun.requested_date,
+    "--limit-stocks", "300",
+    "--force",
+    "--source", "ranchmind.science",
+    "--qimen-method", String(nextMethod),
+    "--haircut", String(nextHaircut),
+    "--amplifier", String(nextAmplifier)
+  ];
+
+  return runTrainingHarness();
+}
+
 function registerWindowsTask(config, taskTime, disableLegacy) {
   const schedulerConfig = getSchedulerConfig(config);
   const effectiveTaskTime = taskTime ?? schedulerConfig?.taskTime ?? "10:20";
@@ -3165,6 +3234,7 @@ function help() {
   console.log("  node ./scripts/ranchmind.mjs register-qmt [--task-time HH:mm]");
   console.log("  node ./scripts/ranchmind.mjs evaluate-scheduling");
   console.log("  node ./scripts/ranchmind.mjs run-autonomy-loop");
+  console.log("  node ./scripts/ranchmind.mjs run-science-loop");
   console.log("  node ./scripts/ranchmind.mjs ensure-feishu-runtime");
   console.log("  node ./scripts/ranchmind.mjs register-feishu-watchdog");
   console.log("  node ./scripts/ranchmind.mjs serve [--port 3000]");
@@ -3201,6 +3271,10 @@ function main() {
 
   if (command === "run-autonomy-loop") {
     return runAutonomyLoop();
+  }
+
+  if (command === "run-science-loop") {
+    return runScienceLoop();
   }
 
   if (command === "ensure-feishu-runtime") {
