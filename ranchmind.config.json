@@ -1,7 +1,9 @@
 {
-  "example_task": {
-    "repoRoot": "./examples",
-    "script": "./examples/run-task.ps1"
+  "kd": {
+    "repoRoot": "..\\cocoon-trade\\cocoon-trade",
+    "trainingScript": "..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-OvernightHoldNonTradingFactorTraining.ps1",
+    "legacyTaskPath": "\\KD\\",
+    "legacyTaskName": "KdNonTradingFactorTrainingDaily"
   },
   "training": {
     "platforms": {
@@ -12,7 +14,9 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "{{root}}\\examples\\run-task.ps1",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-OvernightHoldNonTradingFactorTraining.ps1",
+          "-RepoRoot",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade",
           "-Date",
           "{{date}}",
           "-StartDate",
@@ -32,78 +36,46 @@
           "-Force"
         ],
         "workingDirectory": "{{root}}",
-        "authoritativeStatusPath": "{{root}}\\state\\tmp\\latest_status.json"
+        "authoritativeStatusPath": "{{root}}\\..\\cocoon-trade\\cocoon-trade\\tmp_overnight_hold_factor_train_nontrading_latest_status.json"
       },
       "darwin": {
-        "command": "bash",
-        "args": [
-          "{{root}}/examples/run-task.sh",
-          "--date",
-          "{{date}}",
-          "--start-date",
-          "{{startDate}}",
-          "--limit-stocks",
-          "{{limitStocks}}",
-          "--qimen-method",
-          "{{qimenMethod}}",
-          "--haircut",
-          "{{haircut}}",
-          "--amplifier",
-          "{{amplifier}}"
-        ],
-        "forceArgs": [
-          "--force"
-        ],
+        "command": "",
+        "args": [],
+        "forceArgs": [],
         "workingDirectory": "{{root}}",
-        "authoritativeStatusPath": "{{root}}/state/tmp/latest_status.json"
+        "authoritativeStatusPath": ""
       },
       "linux": {
-        "command": "bash",
-        "args": [
-          "{{root}}/examples/run-task.sh",
-          "--date",
-          "{{date}}",
-          "--start-date",
-          "{{startDate}}",
-          "--limit-stocks",
-          "{{limitStocks}}",
-          "--qimen-method",
-          "{{qimenMethod}}",
-          "--haircut",
-          "{{haircut}}",
-          "--amplifier",
-          "{{amplifier}}"
-        ],
-        "forceArgs": [
-          "--force"
-        ],
+        "command": "",
+        "args": [],
+        "forceArgs": [],
         "workingDirectory": "{{root}}",
-        "authoritativeStatusPath": "{{root}}/state/tmp/latest_status.json"
+        "authoritativeStatusPath": ""
       }
     }
   },
   "hermes": {
-    "home": "%USERPROFILE%\\.hermes\\runtime",
-    "taskName": "Notification Gateway",
-    "gatewayLog": "%USERPROFILE%\\.hermes\\runtime\\logs\\gateway.log",
+    "home": "%USERPROFILE%\\.hermes-windows\\runtime",
+    "taskName": "Hermes Gateway",
+    "gatewayLog": "%USERPROFILE%\\.hermes-windows\\runtime\\logs\\gateway.log",
     "platforms": {
       "win32": {
-        "taskName": "Notification Gateway",
-        "gatewayLog": "%USERPROFILE%\\.hermes\\runtime\\logs\\gateway.log"
+        "taskName": "Hermes Gateway",
+        "gatewayLog": "%USERPROFILE%\\.hermes-windows\\runtime\\logs\\gateway.log"
       },
       "darwin": {
-        "taskName": "Notification Gateway",
+        "taskName": "Hermes Gateway",
         "gatewayLog": "$HOME/.hermes/runtime/logs/gateway.log"
       },
       "linux": {
-        "taskName": "Notification Gateway",
+        "taskName": "Hermes Gateway",
         "gatewayLog": "$HOME/.hermes/runtime/logs/gateway.log"
       }
     }
   },
   "ranchmind": {
     "taskPath": "\\RanchMind\\",
-    "taskName": "RanchMindDailyTask",
+    "taskName": "RanchMindNonTradingFactorTrainingDaily",
     "taskTime": "10:20"
   },
   "scheduler": {
@@ -111,17 +83,17 @@
       "win32": {
         "kind": "windows-task",
         "taskPath": "\\RanchMind\\",
-        "taskName": "RanchMindDailyTask",
+        "taskName": "RanchMindNonTradingFactorTrainingDaily",
         "taskTime": "10:20"
       },
       "darwin": {
         "kind": "cron",
-        "taskName": "RanchMindDailyTask",
+        "taskName": "RanchMindNonTradingFactorTrainingDaily",
         "taskTime": "10:20"
       },
       "linux": {
         "kind": "cron",
-        "taskName": "RanchMindDailyTask",
+        "taskName": "RanchMindNonTradingFactorTrainingDaily",
         "taskTime": "10:20"
       }
     }
@@ -169,23 +141,25 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "{{root}}\\examples\\run-qmt.ps1",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade\\ops\\windows\\Invoke-KdOpenHumanOvernightNotify.ps1",
+          "-RepoRoot",
+          "{{root}}\\..\\cocoon-trade\\cocoon-trade",
           "-Date",
           "{{date}}",
           "-OutputJson",
           "{{root}}\\state\\tmp\\qmt-run-output.json"
         ],
-        "dryRunArgs": ["-DryRun"],
+        "dryRunArgs": ["-NotifyDryRun"],
         "workingDirectory": "{{root}}",
         "outputJsonPath": "{{root}}\\state\\tmp\\qmt-run-output.json",
-        "processName": "TargetProcess",
-        "executable": "C:\\Path\\To\\Target.exe"
+        "processName": "XtItClient",
+        "executable": "C:\\Users\\Cocoon-Break\\software\\国金QMT交易端模拟\\bin.x64\\XtItClient.exe"
       }
     },
     "scheduler": {
       "kind": "windows-task",
       "taskPath": "\\RanchMind\\",
-      "taskName": "RanchMindSecondaryTask",
+      "taskName": "RanchMindOvernightQmtDaily",
       "taskTime": "14:30"
     },
     "harness": {
@@ -205,15 +179,15 @@
   "feishuWatchdog": {
     "failureThreshold": 3,
     "taskPath": "\\RanchMind\\",
-    "taskName": "RanchMindRuntimeWatchdog",
+    "taskName": "RanchMindFeishuWatchdog",
     "taskTime": "00:00",
     "repeatMinutes": 5,
     "sourceCodexAuthPath": "%USERPROFILE%\\.codex\\auth.json",
-    "runtimeHermesAuthPath": "%USERPROFILE%\\.hermes\\runtime\\auth.json",
-    "gatewayStatePath": "%USERPROFILE%\\.hermes\\runtime\\gateway_state.json",
-    "gatewayPidPath": "%USERPROFILE%\\.hermes\\runtime\\gateway.pid",
-    "syncScriptPath": "%USERPROFILE%\\.hermes\\Sync-Auth.ps1",
-    "gatewayTaskName": "Notification Gateway",
+    "runtimeHermesAuthPath": "%USERPROFILE%\\.hermes-windows\\runtime\\auth.json",
+    "gatewayStatePath": "%USERPROFILE%\\.hermes-windows\\runtime\\gateway_state.json",
+    "gatewayPidPath": "%USERPROFILE%\\.hermes-windows\\runtime\\gateway.pid",
+    "syncScriptPath": "%USERPROFILE%\\.hermes-windows\\Sync-CodexAuthToHermes.ps1",
+    "gatewayTaskName": "Hermes Gateway",
     "gatewayTaskPath": "\\",
     "syncSkewSeconds": 3600,
     "logTailLines": 200
